@@ -90,5 +90,88 @@ class ContactParams:
         k_n, c_n, z0 = children
         return cls(float(k_n), float(c_n), float(z0))
 
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class TireParams:
+    mu: float
+    C_kappa: float
+    C_alpha: float
+    eps_v: float = 1e-4
+    eps_force: float = 1e-8
+
+    def tree_flatten(self):
+        children = (
+            jnp.array(self.mu, dtype=jnp.float32),
+            jnp.array(self.C_kappa, dtype=jnp.float32),
+            jnp.array(self.C_alpha, dtype=jnp.float32),
+            jnp.array(self.eps_v, dtype=jnp.float32),
+            jnp.array(self.eps_force, dtype=jnp.float32),
+        )
+        return children, None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        mu, Ck, Ca, eps_v, eps_f = children
+        return cls(float(mu), float(Ck), float(Ca), float(eps_v), float(eps_f))
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class WheelParams:
+    I_w: float # moment of inertia about the wheel
+    b_w: float = 0.0
+
+    def tree_flatten(self):
+        children = (
+            jnp.array(self.I_w,dtype=jnp.float32),
+            jnp.array(self.b_w,dtype=jnp.float32)
+        )
+        return children, None
 
 
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        I_w, b_w = children
+        return cls(float(I_w), float(b_w))
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class ChassisParams:
+    mass: float
+    I_body: Array # moment of inertia of the chassis in body frame
+    g: float = 9.81 #m/s^2
+
+    def tree_flatten(self):
+        children = (
+            jnp.array(self.mass,dtype=jnp.float32),
+            self.I_body,
+            jnp.array(self.g,dtype=jnp.float32)
+        )
+        return children, None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        mass, I_body, g = children
+        return cls(float(mass), I_body, float(g))
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class MotorConfig:
+    has_motor: Array # (4,)
+    alpha: Optional[Array] = None
+
+    def mask(self) -> Array:
+        return self.has_motor.astype(jnp.float32)
+
+    def tree_flatten(self):
+        alpha = self.alpha if self.alpha is not None else jnp.array([],dtype=jnp.float32)
+        aux = {"hax_alpha": self.alpha is not None}
+        children = (self.has_motor, alpha)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        has_motor, alpha = children
+        if not aux["has_alpha"]:
+            return cls(has_motor=has_motor, alpha=alpha)
+        return cls(has_motor=has_motor, alpha=None)
