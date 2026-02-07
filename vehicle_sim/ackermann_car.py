@@ -175,3 +175,92 @@ class MotorConfig:
         if not aux["has_alpha"]:
             return cls(has_motor=has_motor, alpha=alpha)
         return cls(has_motor=has_motor, alpha=None)
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class AckermannCarParams:
+    geom: AckermannGeometry
+    chassis: ChassisParams
+    wheels: WheelParams
+    tires: TireParams
+    contact: ContactParams
+    motor: MotorConfig
+
+
+    def tree_flatten(self):
+        children = (
+            self.geom,
+            self.chassis,
+            self.wheels,
+            self.tires,
+            self.contact,
+            self.motor
+        )
+        return children, None
+
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        geom, chassis, wheels, tires, contact, motor = children
+        return cls(geom,chassis,wheels,tires,contact,motor)
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class AckermannCarState:
+    p_W: Array # (3,) position of the car in world frame
+    R_WB: jaxlie.SO3 # rotation from body to world frame
+    v_W: Array # linear velocity of the car in world frame
+    w_B: Array # angular velocity of the car in body frame
+    omega_W: Array # (4,) angular velocity of the wheels in world frame
+
+    def tree_flatten(self):
+        children = (
+            self.p_W,
+            self.R_WB,
+            self.v_W,
+            self.w_B,
+            self.omega_W
+        )
+        return children, None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        p_W,R_WB,v_W,w_B,omega_W = children
+        return cls(p_W,R_WB,v_W,w_B,omega_W)
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class AckermannCarInput:
+    delta: Array
+    tau_w: Array
+
+    def tree_flatten(self):
+        children = (self.delta, self.tau_w)
+        return children, None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        delta, tau_w = children
+        return cls(delta, tau_w)
+
+# Model
+
+class AckermannCarModel:
+    def __init__(self, params: AckermannCarParams):
+        self.params = params
+
+    def xdot(self, x: AckermannCarState, u: AckermannCarInput) -> AckermannCarState:
+        p = self.params
+
+        p_W = x.p_W
+        R_WB = x.R_WB
+        v_W = x.v_W
+        w_B = x.w_B
+        omega_w = x.omega_W
+
+        delta_i = p.geom.ackermann_front_angles(u.delta)
+        r_B = p.geom.wheel_contact_points_body()
+
+        c = jnp.cos(delta_i)
+        s = jnp.sin(delta_i)
