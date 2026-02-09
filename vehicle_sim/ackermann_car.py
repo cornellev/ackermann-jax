@@ -264,3 +264,66 @@ class AckermannCarModel:
 
         c = jnp.cos(delta_i)
         s = jnp.sin(delta_i)
+        t_B = jnp.stack([c,s, jnp.zeros_like(c)],axis=-1)
+        n_B = jnp.stack([-s,c, jnp.zeros_like(c)],axis=-1)
+
+        R = R_WB.as_matrix()
+        t_W = (R @ t_B.T).T
+        n_W = (R @ n_B.T).T
+        z_W = jnp.array([0.0,0.0,1.0],dtype=jnp.float32)
+
+        p_i_W = p_W[None,:] + (R @ r_B.T).T
+
+        w_cross_r_B = jnp.cross(w_B[None,:],r_B)
+        v_i_W = v_W[None,:] + (R @ w_cross_r_B.T).T # transposrt equation
+
+        Fz = self._normal_forces(p_i_W,v_i_W)
+
+        v_t = jnp.sum(t_W * v_i_W, axis=-1)
+        v_n = jnp.sum(n_W * v_i_W, axis=-1)
+        kappa, alpha = self._slip(omega_w, v_t, v_n)
+
+        Fx, Fy = self._tire_forces(kappa, alpha, Fz)
+
+        f_i_W = Fx[:,None] * t_W + Fy[:,None] * n_W + Fz[:,None] * z_W[None,:]
+        F_W = jnp.sum(f_i_W, axis=0)
+
+        r_i_W = p_i_W - p_W[None,:]
+        tau_W = jnp.sum(jnp.cross(r_i_W, f_i_W), axis=0)
+        tau_B = R.T @ tau_W
+
+        tau_cmd = p.motor_mask() * u.tau_w
+        domega_w = (tau_cmd - p.geom.wheel_radius * Fx - p.wheels.b_w * omega_w) / p.wheels.I_w
+
+        g_W = jnp.array([0.0, 0.0 -p.chassis.g],dtype=jnp.float32)
+        dv_W = F_W / p.chassis.mass + g_W
+
+
+        I = p.chassis.I_body
+        Iw = I @ w_B
+        dW_B = jnp.linalg.solve(I,(tau_B-jnp.cross(w_B,Iw)))
+
+        dp_W = v_W
+
+        # Tangent for SO3 is handled in integrator via w_B; derivative R is placeholder.
+        return AckermannCarState(
+            p_W=dp_W,
+            r_WB=jaxlie.SO3.identity(),
+            v_W=dv_W,
+            w_B=dW_B,
+            omega_w=domega_w
+        )
+
+    def _normal_forces(self, p_i_W: Array, v_i_W: Array) -> Array:
+        k_n = self.p.contact.k_n
+        c_n = self.p.contact.c_n
+        z0 = self.p.contact.z0
+
+        z = p_i_W[:,2]
+        d = jnp.maximum(0.0,z0-z)
+        vz = v_i_W[:,2]
+        d_dot = jnp.where(d > 0.0, -vz, 0.0)
+
+        Fz = k_n * d + c_n * d_dot
+        return jnp.maximim(0.0, Fz)
+
