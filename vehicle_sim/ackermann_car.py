@@ -314,6 +314,34 @@ class AckermannCarModel:
             omega_w=domega_w
         )
 
+    def step(
+        self,
+        x: AckermannCarState,
+        u: AckermannCarInput,
+        dt: float,
+        method: Literal["semi_implicit_euler","euler"] = "semi_implicit_euler"
+    ) -> AckermannCarState:
+        if method == "euler":
+            xdot = self.xdot(x,u)
+            return self._integrate_euler(x,xdot,dt)
+        if method == "semi_implicit_euler":
+            xdot = self.xdot(x,u)
+            return self._integrate_semi_implicit(x,xdot,dt)
+        raise ValueError(f"Unknown integration method {method}")
+
+    def map_velocity_to_wheel_torques(
+        self,
+        x: AckermannCarState,
+        v_cmd: Array,
+        integral_state: Array,
+        Kp: float,
+        Ki: float,
+        tau_max: float,
+        use_traction_limit: bool = True
+    ):
+        raise NotImplementedError
+
+
     def _normal_forces(self, p_i_W: Array, v_i_W: Array) -> Array:
         k_n = self.p.contact.k_n
         c_n = self.p.contact.c_n
@@ -326,4 +354,60 @@ class AckermannCarModel:
 
         Fz = k_n * d + c_n * d_dot
         return jnp.maximim(0.0, Fz)
+
+    def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
+        rw = self.p.geom.wheel_radius
+        eps_v = self.p.tires.eps_v
+        denom = jnp.maximum(eps_v,jnp.abs(v_t))
+        kappa = (rw * omega_w - v_t) / denom
+        alpha = jnp.arctan2(v_n, denom)
+        return kappa, alpha
+
+    def _tire_forces(self, kappa: Array, alpha: Array, Fz: Array) -> Tuple[Array,Array]:
+        tp = self.p.tires
+        Fx_star = tp.C_kappa * kappa
+        Fy_star = -tp.C_alpha * alpha
+
+        Fmax = tp.mu * Fz
+        mag = jnp.sqrt(Fx_star * Fx_star + Fy_star * Fy_star + tp.eps_force)
+        scale = jnp.minimum(1.0, Fmax / mag)
+
+        Fx = scale * Fx_star
+        Fy = scale * Fy_star
+        return Fx, Fy
+
+    def _integrate_euler(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
+        p_W_next = x.p_W + dt * xdot.p_W
+        v_W_next = x.v_W + dt * xdot.v_W
+        w_B_next = x.w_B + dt * xdot.w_B
+        omega_w_next = x.omega_W + dt * xdot.omega_W
+
+        # SO3 integration
+        R_next = x.R_WB @ jaxlie.SO3.exp(w_B_next * dt)
+
+        return AckermannCarState(
+            p_W=p_W_next,
+            R_WB=R_next,
+            v_W = v_W_next,
+            w_B = w_B_next,
+            omega_W = omega_w_next
+        )
+
+    def _integrate_semi_implicit(self, x: AckermannCarState, u: AckermannCarInput, dt: float) -> AckermannCarState:
+        xdot = self.xdot(x,u)
+
+        v_W_next = x.v_W + dt * xdot.v_W
+        w_B_next = x.w_B + dt * xdot.w_B
+        omega_w_next = x.omega_W + dt * xdot.omega_W
+
+        p_W_next = x.p_W + dt * v_W_next
+        R_next = x.R_WB @ jaxlie.SO3.exp(w_B_next * dt)
+
+        return AckermannCarState(
+            p_W=p_W_next,
+            R_WB=R_next,
+            v_W=v_W_next,
+            w_B=w_B_next,
+            omega_W=omega_w_next
+        )
 
