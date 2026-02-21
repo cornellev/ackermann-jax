@@ -99,7 +99,7 @@ def main():
     (xN, _integN), (yaw_hist, p_hist, v_hist, tau_hist) = jax.lax.scan(
         step_fn, (x0,jnp.array(0.0,dtype=jnp.float32)), ks
     )
-    print(jnp.shape(xN))
+    print(jnp.shape(yaw_hist))
     yaw_final = yaw_hist[-1]
     yaw_straight_end = yaw_hist[N_straight-1]
 

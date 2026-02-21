@@ -263,9 +263,8 @@ class AckermannCarModel:
         self.params = params
 
     def xdot(self, x: AckermannCarState, u: AckermannCarInput) -> AckermannCarState:
-        p = self.params
 
-        assert type(u) is AckermannCarInput, f"Expected AckermannCarInput, got {type(u)}"
+        p = self.params
 
         p_W = x.p_W
         R_WB = x.R_WB
@@ -438,9 +437,7 @@ class AckermannCarModel:
             omega_W = omega_w_next
         )
 
-    def _integrate_semi_implicit(self, x: AckermannCarState, u: AckermannCarInput, dt: float) -> AckermannCarState:
-        xdot = self.xdot(x,u)
-
+    def _integrate_semi_implicit(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
         v_W_next = x.v_W + dt * xdot.v_W
         w_B_next = x.w_B + dt * xdot.w_B
         omega_w_next = x.omega_W + dt * xdot.omega_W
