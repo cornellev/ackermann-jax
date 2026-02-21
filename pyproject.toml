@@ -1,0 +1,53 @@
+[project]
+name = "ackermann-jax"
+version = "0.0.1"
+requires-python = ">= 3.11"
+description = "3D Rigid Body Ackermann Car Physics in JAX"
+authors= [
+  { name = "Lucas Libshutz", email = "lsl94@cornell.edu"}
+]
+
+dependencies = [
+  "jax",
+  "jaxlie",
+  "ipython",
+  "jaxsim"
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "vehicle_sim" }
+
+[tool.setuptools.packages.find]
+where = ["vehicle_sim"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64","osx-arm64","osx-64"]
+
+[tool.pixi.environments]
+default = {features = ["cpu"]}
+gpu = {features = ["gpu"]}
+
+
+[tool.pixi.dependencies]
+jax = "*"
+jaxlie = "*"
+jaxsim = "*"
+ipython = "*"
+
+[tool.pixi.pypi-dependencies]
+ackermann-jax = {path = "./", editable = true}
+
+[tool.pixi.feature.gpu]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12"}
+
+[tool.pixi.feature.gpu.dependencies]
+cuda-version = "12.*"
+jaxlib = {version = "*", build = "*cuda*"}
+
+[tool.pixi.feature.cpu.dependencies]

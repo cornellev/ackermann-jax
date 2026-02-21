@@ -37,6 +37,21 @@ class AckermannGeometry:
             [-b , -W / 2.0, -h], #RR
         ], dtype=jnp.float32)
 
+    def tree_flatten(self):
+        children = (
+            jnp.array(self.L, dtype=jnp.float32),
+            jnp.array(self.W, dtype=jnp.float32),
+            jnp.array(self.a, dtype=jnp.float32),
+            jnp.array(self.b, dtype=jnp.float32),
+            jnp.array(self.h, dtype=jnp.float32),
+            jnp.array(self.wheel_radius, dtype=jnp.float32),
+        )
+        aux = None
+        return children, aux
+
+    def tree_unflatten(cls, aux, children):
+        return cls(*children)
+
 def ackermann_front_angles(self, delta: Array, eps: float = 1e6) -> Array:
     tan_delta = jnp.tan(delta)
     tan_delta = jnp.where(jnp.abs(tan_delta) < eps, jnp.sign(tan_delta) * eps + eps, tan_delta)
@@ -411,3 +426,60 @@ class AckermannCarModel:
             omega_W=omega_w_next
         )
 
+
+# ---
+# Factory Helpers
+# ---
+
+def default_params() -> AckermannCarParams:
+    geom = AckermannGeometry(
+        L=0.26,
+        W=0.16,
+        a=0.13,
+        b=0.13,
+        h=0.06,
+        wheel_radius=0.03
+    )
+
+
+    mass = 1.5 # kg
+    I_body = jnp.diag(jnp.array([0.02, 0.02, 0.04], dtype=jnp.float32))
+    #TODO: I_body should be a function from jaxsim/URDF file
+    chassis = ChassisParams(mass=mass,I_body=I_body,g=9.81)
+
+    wheels = WheelParams(I_w=0.001, b_w=0.01) # these need to be dynamically determined as well
+    tires = TireParams(mu=0.9, C_kappa=30.0, C_alpha=25.0,eps_v=1e-3)
+    contact = ContactParams(k_n=5e4,c_n=2e3,z0=0.0)
+
+    has_motor = jnp.array([0.0,0.0,1.0,1.0],dtype=jnp.float32) # RWD car
+    motor = MotorConfig(has_motor=has_motor, alpha=None)
+
+    return AckermannCarParams(
+        geom=geom,
+        chassis=chassis,
+        wheels=wheels,
+        tires=tires,
+        contact=contact,
+        motor=motor
+    )
+
+def default_state(z0: float = 0.08) -> AckermannCarState:
+    p_W = jnp.array([0.0, 0.0, z0], dtype=jnp.float32)
+    R_WB = jaxlie.SO3.identity()
+    v_W = jnp.zeros((3,), dtype=jnp.float32)
+    w_B = jnp.zeros((3,), dtype=jnp.float32)
+    omega_W = jnp.zeros((4,), dtype=jnp.float32)
+
+    return AckermannCarState(
+        p_W=p_W,
+        R_WB=R_WB,
+        v_W=v_W,
+        w_B=w_B,
+        omega_W=omega_W
+    )
+
+def pack_input(delta: float, tau_w: Array) -> AckermannCarInput:
+    return AckermannCarInput(
+        delta = jnp.array(delta, dtype=jnp.float32),
+        tau_w=tau_w.astype(jnp.float32)
+    )
