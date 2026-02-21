@@ -74,7 +74,6 @@ def main():
     # Do a lax.scan over steps to compute efficiently
     def step_fn(carry,k):
         x, integ = carry
-        
         delta = delta_schedule(k)
 
         # Map chassis speed command to wheel torques via command
@@ -89,7 +88,7 @@ def main():
         )
 
         u = AckermannCarInput(delta=delta,tau_w=tau_w)
-        x_next = model.step(x=x,u=u, dt=dt, method="semi_implicit_euler")
+        x_next = model.step(x=x,u=u, dt=dt, method="euler")
 
         # Log yaw and position
         yaw_next = yaw_from_R(x_next.R_WB)
@@ -104,6 +103,55 @@ def main():
     yaw_straight_end = yaw_hist[N_straight-1]
 
     # Expected yaw
+    L = params.geom.L
+    yaw_expected = (v_cmd / L) * jnp.tan(delta_turn) * T_turn
+
+    # Wrap to pi
+    def wrap_pi(a):
+        return (a + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
+    yaw_final_wrapped = wrap_pi(yaw_final)
+    yaw_expected_wrapped = wrap_pi(yaw_expected)
+
+    # -----------------------
+    # Assertions (sanity)
+    # -----------------------
+    # 1) Should be roughly straight at end of straight segment
+    assert jnp.abs(yaw_straight_end) < yaw_straight_tol, (
+        f"Yaw drifted too much while going straight.\n"
+        f"  yaw_end_straight = {float(yaw_straight_end):.3f} rad "
+        f"({float(jnp.rad2deg(yaw_straight_end)):.1f} deg)\n"
+        f"  tol = {float(yaw_straight_tol):.3f} rad"
+    )
+
+    # 2) Left turn should yield positive yaw
+    assert yaw_final > 0.0, (
+        f"Expected positive yaw after left turn, got yaw_final={float(yaw_final):.3f} rad"
+    )
+
+    # 3) Final yaw should be in the ballpark of bicycle model expectation
+    yaw_err = wrap_pi(yaw_final_wrapped - yaw_expected_wrapped)
+    assert jnp.abs(yaw_err) < yaw_final_tol, (
+        f"Final yaw not close to expectation.\n"
+        f"  yaw_final     = {float(yaw_final_wrapped):.3f} rad "
+        f"({float(jnp.rad2deg(yaw_final_wrapped)):.1f} deg)\n"
+        f"  yaw_expected  = {float(yaw_expected_wrapped):.3f} rad "
+        f"({float(jnp.rad2deg(yaw_expected_wrapped)):.1f} deg)\n"
+        f"  yaw_err       = {float(yaw_err):.3f} rad "
+        f"({float(jnp.rad2deg(yaw_err)):.1f} deg)\n"
+        f"  tol           = {float(yaw_final_tol):.3f} rad"
+    )
+
+    # Optional: also sanity-check that we moved forward and left (y should increase in a left turn)
+    p_final = p_hist[-1]
+    assert p_final[0] > 0.5, f"Did not move forward enough: x_final={float(p_final[0]):.3f} m"
+    assert p_final[1] > 0.0, f"Expected positive lateral displacement after left turn: y_final={float(p_final[1]):.3f} m"
+
+    print("✅ Trajectory sanity test passed.")
+    print(f"  yaw_end_straight = {float(yaw_straight_end):.3f} rad ({float(jnp.rad2deg(yaw_straight_end)):.1f} deg)")
+    print(f"  yaw_final        = {float(yaw_final_wrapped):.3f} rad ({float(jnp.rad2deg(yaw_final_wrapped)):.1f} deg)")
+    print(f"  yaw_expected     = {float(yaw_expected_wrapped):.3f} rad ({float(jnp.rad2deg(yaw_expected_wrapped)):.1f} deg)")
+    print(f"  p_final          = [{float(p_final[0]):.3f}, {float(p_final[1]):.3f}, {float(p_final[2]):.3f}] m")
     
 if __name__ == "__main__":
     main()
