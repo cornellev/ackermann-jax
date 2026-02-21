@@ -1,5 +1,5 @@
 [project]
-name = "ackermann-jax"
+name = "ackermann_jax"
 version = "0.0.1"
 requires-python = ">= 3.11"
 description = "3D Rigid Body Ackermann Car Physics in JAX"
@@ -19,10 +19,10 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = { "" = "vehicle_sim" }
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
-where = ["vehicle_sim"]
+where = ["src"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]

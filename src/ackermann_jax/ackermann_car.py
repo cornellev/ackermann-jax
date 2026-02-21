@@ -13,9 +13,6 @@ import jaxlie
 WheelName = Literal["FL","FR","RL","RR"]
 WHEEL_ORDER: Tuple[WheelName, ...] = ("FL","FR","RL","RR")
 
-def _clip(x: Array, lo: Array, hi: Array) -> Array:
-    return jnp.minimum(jnp.maximum(x, lo), hi)
-
 ## Pytree friendly dataclasses
 
 @jax.tree_util.register_pytree_node_class
@@ -52,20 +49,20 @@ class AckermannGeometry:
     def tree_unflatten(cls, aux, children):
         return cls(*children)
 
-def ackermann_front_angles(self, delta: Array, eps: float = 1e6) -> Array:
-    tan_delta = jnp.tan(delta)
-    tan_delta = jnp.where(jnp.abs(tan_delta) < eps, jnp.sign(tan_delta) * eps + eps, tan_delta)
-    R_turn = self.L / tan_delta
+    def ackermann_front_angles(self, delta: Array, eps: float = 1e6) -> Array:
+        tan_delta = jnp.tan(delta)
+        tan_delta = jnp.where(jnp.abs(tan_delta) < eps, jnp.sign(tan_delta) * eps + eps, tan_delta)
+        R_turn = self.L / tan_delta
 
-    denom_L = (R_turn - self.W / 2.0)
-    denom_R = (R_turn + self.W / 2.0)
-    denom_L = jnp.where(jnp.abs(denom_L) < eps, jnp.sign(denom_L) * eps + eps, denom_L)
-    denom_R = jnp.where(jnp.abs(denom_R) < eps, jnp.sign(denom_R) * eps + eps, denom_R)
+        denom_L = (R_turn - self.W / 2.0)
+        denom_R = (R_turn + self.W / 2.0)
+        denom_L = jnp.where(jnp.abs(denom_L) < eps, jnp.sign(denom_L) * eps + eps, denom_L)
+        denom_R = jnp.where(jnp.abs(denom_R) < eps, jnp.sign(denom_R) * eps + eps, denom_R)
 
-    delta_FL = jnp.arctan(self.L / denom_L)
-    delta_FR = jnp.arctan(self.L / denom_R)
+        delta_FL = jnp.arctan(self.L / denom_L)
+        delta_FR = jnp.arctan(self.L / denom_R)
 
-    return jnp.array([delta_FL, delta_FR, 0.0, 0.0],dtype=jnp.float32)
+        return jnp.array([delta_FL, delta_FR, 0.0, 0.0],dtype=jnp.float32)
 
     def tree_flatten(self):
         children = (
@@ -268,6 +265,8 @@ class AckermannCarModel:
     def xdot(self, x: AckermannCarState, u: AckermannCarInput) -> AckermannCarState:
         p = self.params
 
+        assert type(u) is AckermannCarInput, f"Expected AckermannCarInput, got {type(u)}"
+
         p_W = x.p_W
         R_WB = x.R_WB
         v_W = x.v_W
@@ -307,11 +306,11 @@ class AckermannCarModel:
         tau_W = jnp.sum(jnp.cross(r_i_W, f_i_W), axis=0)
         tau_B = R.T @ tau_W
 
-        tau_cmd = p.motor_mask() * u.tau_w
+        tau_cmd = p.motor.mask() * u.tau_w
         domega_w = (tau_cmd - p.geom.wheel_radius * Fx - p.wheels.b_w * omega_w) / p.wheels.I_w
 
-        g_W = jnp.array([0.0, 0.0 -p.chassis.g],dtype=jnp.float32)
-        dv_W = F_W / p.chassis.mass + g_W
+        g_W = jnp.array([0.0, 0.0, -p.chassis.g],dtype=jnp.float32)
+        dv_W = (F_W / p.chassis.mass) + g_W
 
 
         I = p.chassis.I_body
@@ -323,10 +322,10 @@ class AckermannCarModel:
         # Tangent for SO3 is handled in integrator via w_B; derivative R is placeholder.
         return AckermannCarState(
             p_W=dp_W,
-            r_WB=jaxlie.SO3.identity(),
+            R_WB=jaxlie.SO3.identity(),
             v_W=dv_W,
             w_B=dW_B,
-            omega_w=domega_w
+            omega_W=domega_w
         )
 
     def step(
@@ -354,13 +353,44 @@ class AckermannCarModel:
         tau_max: float,
         use_traction_limit: bool = True
     ):
-        raise NotImplementedError
+        p = self.params
+        R = x.R_WB.as_matrix()
+
+        v_B = R.T @ x.v_W
+        v_X = v_B[0]
+        err = v_cmd - v_X
+        integ_next = integral_state + err
+
+        Fx_cmd = Kp * err + Ki * integ_next
+
+        mask = p.motor.mask()
+        if p.motor.alpha is None:
+            denom = jnp.maximum(1.0, jnp.sum(mask))
+            alpha = mask / denom
+        else:
+            alpha = p.motor.alpha
+
+        Fx_i_cmd = mask * alpha * Fx_cmd
+
+        if use_traction_limit:
+            r_B = p.geom.wheel_contact_points_body()
+            p_i_W = x.p_W[None,:] + (R @ r_B.T).T # transform points to world frame
+            w_cross_r_B = jnp.cross(x.w_B[None,:],r_B)
+            v_i_W = x.v_W[None,:] + (R @ w_cross_r_B.T).T # transposrt equation
+            Fz = self._normal_forces(p_i_W,v_i_W)
+            Fx_lim = p.tires.mu * Fz
+            Fx_i_cmd = jnp.clip(Fx_i_cmd,-Fx_lim,Fx_lim)
+
+        tau_w = p.geom.wheel_radius * Fx_i_cmd
+        tau_w = jnp.clip(tau_w, -tau_max, tau_max)
+        return tau_w, integ_next
+
 
 
     def _normal_forces(self, p_i_W: Array, v_i_W: Array) -> Array:
-        k_n = self.p.contact.k_n
-        c_n = self.p.contact.c_n
-        z0 = self.p.contact.z0
+        k_n = self.params.contact.k_n
+        c_n = self.params.contact.c_n
+        z0 = self.params.contact.z0
 
         z = p_i_W[:,2]
         d = jnp.maximum(0.0,z0-z)
@@ -368,18 +398,18 @@ class AckermannCarModel:
         d_dot = jnp.where(d > 0.0, -vz, 0.0)
 
         Fz = k_n * d + c_n * d_dot
-        return jnp.maximim(0.0, Fz)
+        return jnp.maximum(0.0, Fz)
 
     def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
-        rw = self.p.geom.wheel_radius
-        eps_v = self.p.tires.eps_v
+        rw = self.params.geom.wheel_radius
+        eps_v = self.params.tires.eps_v
         denom = jnp.maximum(eps_v,jnp.abs(v_t))
         kappa = (rw * omega_w - v_t) / denom
         alpha = jnp.arctan2(v_n, denom)
         return kappa, alpha
 
     def _tire_forces(self, kappa: Array, alpha: Array, Fz: Array) -> Tuple[Array,Array]:
-        tp = self.p.tires
+        tp = self.params.tires
         Fx_star = tp.C_kappa * kappa
         Fy_star = -tp.C_alpha * alpha
 
