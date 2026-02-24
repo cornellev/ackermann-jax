@@ -17,6 +17,34 @@ WHEEL_ORDER: Tuple[WheelName, ...] = ("FL","FR","RL","RR")
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
+class Diagnostics:
+    delta_i: Array      # (4,)
+    r_B: Array          # (4,3)
+    p_i_W: Array        # (4,3)
+    v_i_W: Array        # (4,3)
+    Fz: Array           # (4,)
+    v_t: Array          # (4,)
+    v_n: Array          # (4,)
+    kappa: Array        # (4,)
+    alpha: Array        # (4,)
+    Fx: Array           # (4,)
+    Fy: Array           # (4,)
+    f_i_W: Array        # (4,3)
+    F_W: Array          # (3,)
+    tau_W: Array        # (3,)
+    tau_B: Array        # (3,)
+
+    def tree_flatten(self):
+        return (self.delta_i, self.r_B, self.p_i_W, self.v_i_W, self.Fz,
+                self.v_t, self.v_n, self.kappa, self.alpha, self.Fx, self.Fy,
+                self.f_i_W, self.F_W, self.tau_W, self.tau_B), None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return cls(*children)
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
 class AckermannGeometry:
     L: float
     W: float
@@ -63,23 +91,6 @@ class AckermannGeometry:
         delta_FR = jnp.arctan(self.L / denom_R)
 
         return jnp.array([delta_FL, delta_FR, 0.0, 0.0],dtype=jnp.float32)
-
-    def tree_flatten(self):
-        children = (
-            jnp.array(self.L, dtype=jnp.float32),
-            jnp.array(self.W, dtype=jnp.float32),
-            jnp.array(self.a, dtype=jnp.float32),
-            jnp.array(self.b, dtype=jnp.float32),
-            jnp.array(self.h, dtype=jnp.float32),
-            jnp.array(self.wheel_radius, dtype=jnp.float32),
-        )
-        aux = None
-        return children, aux
-
-    @classmethod
-    def tree_unflatten(cls, aux, children):
-        L, W, a, b, h, wheel_radius = children
-        return cls(float(L), float(W), float(a), float(b), float(h), float(wheel_radius))
 
 
 @jax.tree_util.register_pytree_node_class
@@ -312,9 +323,9 @@ class AckermannCarModel:
         dv_W = (F_W / p.chassis.mass) + g_W
 
 
-        I = p.chassis.I_body
-        Iw = I @ w_B
-        dW_B = jnp.linalg.solve(I,(tau_B-jnp.cross(w_B,Iw)))
+        I_b = p.chassis.I_body
+        Iw = I_b @ w_B
+        dW_B = jnp.linalg.solve(I_b,(tau_B-jnp.cross(w_B,Iw)))
 
         dp_W = v_W
 
@@ -453,6 +464,61 @@ class AckermannCarModel:
             omega_W=omega_w_next
         )
 
+    def diagnostics(
+        self,
+        x: AckermannCarState,
+        u: AckermannCarInput
+    ) -> Diagnostics:
+        p = self.params
+        p_W, R_WB, v_W, w_B, omega_w = x.p_W, x.R_WB, x.v_W, x.w_B, x.omega_W
+        R = R_WB.as_matrix()
+
+        delta_i = p.geom.ackermann_front_angles(u.delta)
+        r_B = p.geom.wheel_contact_points_body()
+
+        c = jnp.cos(delta_i); s = jnp.sin(delta_i)
+        # body frame vectors of steering angle
+        n_B = jnp.stack([-s,c, jnp.zeros_like(c)],axis=-1)
+        t_B = jnp.stack([c,s, jnp.zeros_like(c)],axis=-1)
+
+        t_W = (R @ t_B.T).T
+        n_W = (R @ n_B.T).T
+        z_W = jnp.array([0., 0., 1.],dtype=jnp.float32)
+
+        p_i_W = p_W[None, :] + (R @ r_B.T).T
+        w_cross_r_B = jnp.cross(w_B[None,:],r_B)
+        v_i_W = v_W[None,:] + (R @ w_cross_r_B.T).T
+
+        Fz = self._normal_forces(p_i_W,v_i_W)
+        v_t = jnp.sum(t_W * v_i_W, axis=-1)
+        v_n = jnp.sum(n_W * v_i_W, axis=-1)
+        kappa, alpha = self._slip(omega_w, v_t, v_n)
+        Fx, Fy = self._tire_forces(kappa, alpha, Fz)
+
+        f_i_W = Fx[:,None] * t_W + Fy[:,None] * n_W + Fz[:,None] * z_W[None,:]
+        F_W = jnp.sum(f_i_W, axis=0)
+        r_i_W = p_i_W - p_W[None,:]
+        tau_W = jnp.sum(jnp.cross(r_i_W, f_i_W), axis=0)
+        tau_B = R.T @ tau_W
+
+        return Diagnostics(
+            delta_i=delta_i,
+            r_B=r_B,
+            p_i_W=p_i_W,
+            v_i_W=v_i_W,
+            Fz=Fz,
+            v_t=v_t,
+            v_n=v_n,
+            kappa=kappa,
+            alpha=alpha,
+            Fx=Fx,
+            Fy=Fy,
+            f_i_W=f_i_W,
+            F_W=F_W,
+            tau_W=tau_W,
+            tau_B=tau_B
+        )
+
 
 # ---
 # Factory Helpers
@@ -476,7 +542,7 @@ def default_params() -> AckermannCarParams:
 
     wheels = WheelParams(I_w=0.001, b_w=0.01) # these need to be dynamically determined as well
     tires = TireParams(mu=0.9, C_kappa=30.0, C_alpha=25.0,eps_v=1e-3)
-    contact = ContactParams(k_n=5e4,c_n=2e3,z0=0.0)
+    contact = ContactParams(k_n=2e3,c_n=50,z0=0.0)
 
     has_motor = jnp.array([0.0,0.0,1.0,1.0],dtype=jnp.float32) # RWD car
     motor = MotorConfig(has_motor=has_motor, alpha=None)
@@ -510,3 +576,5 @@ def pack_input(delta: float, tau_w: Array) -> AckermannCarInput:
         delta = jnp.array(delta, dtype=jnp.float32),
         tau_w=tau_w.astype(jnp.float32)
     )
+
+

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import math
 from typing import Any, Dict, Tuple, Optional
+from matplotlib import pyplot as plt
 
 import jax
 import jax.numpy as jnp
@@ -115,6 +116,10 @@ def main():
 
     # -----------------------
     # Assertions (sanity)
+    plt.plot(tau_hist)
+    plt.show()
+    assert jnp.abs(p_hist[N_straight-1,1]) > 0, f"Distance not traveled, {p_hist[N_straight-1,1]}"
+    #
     # -----------------------
     # 1) Should be roughly straight at end of straight segment
     assert jnp.abs(yaw_straight_end) < yaw_straight_tol, (

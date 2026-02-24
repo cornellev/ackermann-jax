@@ -38,6 +38,8 @@ jax = "*"
 jaxlie = "*"
 jaxsim = "*"
 ipython = "*"
+black = ">=26.1.0,<27"
+ruff = ">=0.15.2,<0.16"
 
 [tool.pixi.pypi-dependencies]
 ackermann-jax = {path = "./", editable = true}
