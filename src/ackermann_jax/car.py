@@ -13,6 +13,10 @@ import jaxlie
 WheelName = Literal["FL","FR","RL","RR"]
 WHEEL_ORDER: Tuple[WheelName, ...] = ("FL","FR","RL","RR")
 
+def smooth_relu(x, eps=1e-4):
+    # eps has units of x; smaller = sharper
+    return eps * jnp.log1p(jnp.exp(x / eps))
+
 ## Pytree friendly dataclasses
 
 @jax.tree_util.register_pytree_node_class
@@ -401,13 +405,14 @@ class AckermannCarModel:
         k_n = self.params.contact.k_n
         c_n = self.params.contact.c_n
         z0 = self.params.contact.z0
-
         z = p_i_W[:,2]
-        d = jnp.maximum(0.0,z0-z)
         vz = v_i_W[:,2]
-        d_dot = jnp.where(d > 0.0, -vz, 0.0)
 
-        Fz = k_n * d + c_n * d_dot
+
+        d = z0-z
+        ddot = -vz
+
+        Fz = k_n * jax.nn.relu(d) + c_n * jax.nn.relu(ddot) * (d > 0)
         return jnp.maximum(0.0, Fz)
 
     def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
@@ -425,7 +430,7 @@ class AckermannCarModel:
 
         Fmax = tp.mu * Fz
         mag = jnp.sqrt(Fx_star * Fx_star + Fy_star * Fy_star + tp.eps_force)
-        scale = jnp.minimum(1.0, Fmax / mag)
+        scale = jnp.minimum(1.0, Fmax / jnp.sqrt(mag**2 + Fmax**2))
 
         Fx = scale * Fx_star
         Fy = scale * Fy_star
@@ -476,7 +481,8 @@ class AckermannCarModel:
         delta_i = p.geom.ackermann_front_angles(u.delta)
         r_B = p.geom.wheel_contact_points_body()
 
-        c = jnp.cos(delta_i); s = jnp.sin(delta_i)
+        c = jnp.cos(delta_i)
+        s = jnp.sin(delta_i)
         # body frame vectors of steering angle
         n_B = jnp.stack([-s,c, jnp.zeros_like(c)],axis=-1)
         t_B = jnp.stack([c,s, jnp.zeros_like(c)],axis=-1)

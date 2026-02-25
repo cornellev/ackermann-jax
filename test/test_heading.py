@@ -65,6 +65,14 @@ def main():
     # Model initialize
     params = default_params()
     model = AckermannCarModel(params)
+    params = params.__class__(
+        geom=params.geom,
+        chassis=params.chassis,
+        wheels=params.wheels,
+        tires=params.tires.__class__(mu=params.tires.mu, C_kappa=0.0, C_alpha=0.0, eps_v=params.tires.eps_v, eps_force=params.tires.eps_force),
+        contact=params.contact.__class__(k_n=0.0,c_n=0.0,z0=params.contact.z0),
+        motor=params.motor.__class__(has_motor=jnp.zeros(4),alpha=None),
+    )
 
     x0 = default_state(z0=0.10)
 
@@ -116,7 +124,14 @@ def main():
 
     # -----------------------
     # Assertions (sanity)
-    plt.plot(tau_hist)
+    plt.plot(tau_hist[:,0], label="tau_FL")
+    plt.plot(tau_hist[:,1], label="tau_FR")
+    plt.plot(tau_hist[:,2], label="tau_RL")
+    plt.plot(tau_hist[:,3], label="tau_RR")
+    plt.legend()
+    plt.show()
+
+    plt.plot(p_hist[:,0], p_hist[:,1])
     plt.show()
     assert jnp.abs(p_hist[N_straight-1,1]) > 0, f"Distance not traveled, {p_hist[N_straight-1,1]}"
     #
