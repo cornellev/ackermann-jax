@@ -12,7 +12,7 @@ dependencies = [
   "jaxlie",
   "ipython",
   "jaxsim"
-]
+, "addcopyfighandler>=3.2.4,<4", "pyqt5>=5.15.11,<6"]
 
 [build-system]
 requires = ["setuptools>=61"]

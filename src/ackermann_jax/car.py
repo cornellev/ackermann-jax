@@ -362,9 +362,11 @@ class AckermannCarModel:
         x: AckermannCarState,
         v_cmd: Array,
         integral_state: Array,
+        dt: float,
         Kp: float,
         Ki: float,
         tau_max: float,
+        integ_max: float = 10.0,
         use_traction_limit: bool = True
     ):
         p = self.params
@@ -373,9 +375,9 @@ class AckermannCarModel:
         v_B = R.T @ x.v_W
         v_X = v_B[0]
         err = v_cmd - v_X
-        integ_next = integral_state + err
+        integ_cand = jnp.clip(integral_state + err * dt,-integ_max, integ_max)
 
-        Fx_cmd = Kp * err + Ki * integ_next
+        Fx_cmd = Kp * err + Ki * integ_cand 
 
         mask = p.motor.mask()
         if p.motor.alpha is None:
@@ -397,6 +399,12 @@ class AckermannCarModel:
 
         tau_w = p.geom.wheel_radius * Fx_i_cmd
         tau_w = jnp.clip(tau_w, -tau_max, tau_max)
+
+        #anti wind up logic
+        sat = jnp.any(jnp.abs(tau_w) >= tau_max + 1e6)
+
+        integ_next = jnp.where(sat, integral_state, integ_cand)
+
         return tau_w, integ_next
 
 
@@ -408,7 +416,6 @@ class AckermannCarModel:
         z = p_i_W[:,2]
         vz = v_i_W[:,2]
 
-
         d = z0-z
         ddot = -vz
 
@@ -418,9 +425,11 @@ class AckermannCarModel:
     def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
         rw = self.params.geom.wheel_radius
         eps_v = self.params.tires.eps_v
-        denom = jnp.maximum(eps_v,jnp.abs(v_t))
+        # denom = jnp.maximum(eps_v,jnp.abs(v_t))
+        denom = jnp.maximum(jnp.sqrt(v_t * v_t + eps_v * eps_v),eps_v)
         kappa = (rw * omega_w - v_t) / denom
-        alpha = jnp.arctan2(v_n, denom)
+        alpha = jnp.arctan2(v_n, jnp.abs(v_t) + eps_v)
+        alpha = 0.5 * jnp.tanh(alpha / 0.5)
         return kappa, alpha
 
     def _tire_forces(self, kappa: Array, alpha: Array, Fz: Array) -> Tuple[Array,Array]:
