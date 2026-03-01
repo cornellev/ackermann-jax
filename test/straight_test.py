@@ -77,6 +77,7 @@ def main():
         p = x_next.p_W
         v = x_next.v_W
         Fx = debug.Fx
+        Fz = debug.Fz
         omega = x.omega_W
         kappa = debug.kappa
 
@@ -96,12 +97,12 @@ def main():
         err_norm = jnp.linalg.norm(kin_err)
 
 
-        return (x_next, integ_next), (p, v, tau_w, yaw, Fx, omega, kappa, err_norm)
+        return (x_next, integ_next), (p, v, tau_w, yaw, Fx, Fz, omega, kappa, err_norm)
 
     k_list = jnp.arange(N,dtype=jnp.int32)
     (xN, integN), hists = jax.lax.scan(step_fn, (x0, jnp.array(0.0,dtype=jnp.float32)), k_list)
 
-    (p_hist, v_hist, tau_hist, yaw_hist, Fx_hist, omega_hist, kappa_hist, errHist) = hists
+    (p_hist, v_hist, tau_hist, yaw_hist, Fx_hist, Fz_hist, omega_hist, kappa_hist, errHist) = hists
 
     t = jnp.arange(N) * dt
 
@@ -114,58 +115,72 @@ def main():
 
     # --------- Plotting ---------
 
-    # plt.figure()
-    # plt.plot(p_hist[:,0], p_hist[:,1], label="actual")
-    # plt.plot(x_exp, y_exp, "--", label="expected (straight)")
-    # plt.axis("equal")
-    # plt.xlabel("x [m]")
-    # plt.ylabel("y [m]")
-    # plt.legend()
-    # plt.title("Drop + straight: XY")
-    # plt.show()
+    plt.figure()
+    plt.plot(p_hist[:,0], p_hist[:,1], label="actual")
+    plt.plot(x_exp, y_exp, "--", label="expected (straight)")
+    plt.axis("equal")
+    plt.xlabel("x [m]")
+    plt.ylabel("y [m]")
+    plt.legend()
+    plt.title("Drop + straight: XY")
+    plt.show()
+
+    print(f"Final Position: {p_hist[-1,:]}")
 
     # yaw vs expected
-    # plt.figure()
-    # plt.plot(t, jnp.rad2deg(wrap_pi(yaw_hist)), label="yaw actual [deg]")
-    # plt.plot(t, jnp.rad2deg(wrap_pi(yaw_exp)), "--", label="yaw expected [deg]")
-    # plt.axvline(T_settle, linestyle="--")
-    # plt.xlabel("t [s]")
-    # plt.ylabel("yaw [deg]")
-    # plt.legend()
-    # plt.title("Yaw (should stay ~0 after settle)")
-    # plt.show()
+    plt.figure()
+    plt.plot(t, jnp.rad2deg(wrap_pi(yaw_hist)), label="yaw actual [deg]")
+    plt.plot(t, jnp.rad2deg(wrap_pi(yaw_exp)), "--", label="yaw expected [deg]")
+    plt.axvline(T_settle, linestyle="--")
+    plt.xlabel("t [s]")
+    plt.ylabel("yaw [deg]")
+    plt.legend()
+    plt.title("Yaw (should stay ~0 after settle)")
+    plt.show()
 
     # wheel torques
-    # plt.figure()
-    # plt.plot(tau_hist[:,0], label="tau_FL")
-    # plt.plot(tau_hist[:,1], label="tau_FR")
-    # plt.plot(tau_hist[:,2], label="tau_RL")
-    # plt.plot(tau_hist[:,3], label="tau_RR")
-    # plt.axvline(N_settle, linestyle="--")
-    # plt.legend()
-    # plt.title("Wheel torques")
-    # plt.show()
+    plt.figure()
+    plt.plot(tau_hist[:,0], label="tau_FL")
+    plt.plot(tau_hist[:,1], label="tau_FR")
+    plt.plot(tau_hist[:,2], label="tau_RL")
+    plt.plot(tau_hist[:,3], label="tau_RR")
+    plt.axvline(N_settle, linestyle="--")
+    plt.legend()
+    plt.title("Wheel torques")
+    plt.show()
 
     # wheel normal forces 
-    # plt.figure()
-    # plt.plot(Fx_hist[:,0], label="F_x(FL)")
-    # plt.plot(Fx_hist[:,1], label="F_x(FR)")
-    # plt.plot(Fx_hist[:,2], label="F_x(RL)")
-    # plt.plot(Fx_hist[:,3], label="F_x(RR)")
-    # plt.axvline(N_settle, linestyle="--")
-    # plt.legend()
-    # plt.title("Wheel longitudal forces")
-    # plt.show()
+    plt.figure()
+    plt.plot(Fx_hist[:,0], label="F_x(FL)")
+    plt.plot(Fx_hist[:,1], label="F_x(FR)")
+    plt.plot(Fx_hist[:,2], label="F_x(RL)")
+    plt.plot(Fx_hist[:,3], label="F_x(RR)")
+    plt.axvline(N_settle, linestyle="--")
+    plt.legend()
+    plt.title("Wheel longitudal forces")
+    plt.show()
+
+    plt.figure()
+    plt.plot(Fz_hist[:,0], label="F_z(FL)")
+    plt.plot(Fz_hist[:,1], label="F_z(FR)")
+    plt.plot(Fz_hist[:,2], label="F_z(RL)")
+    plt.plot(Fz_hist[:,3], label="F_z(RR)")
+    plt.axvline(N_settle, linestyle="--")
+    plt.legend()
+    plt.title("Wheel normal forces")
+    plt.show()
+
+   
 
     # Difference of front normal forces
-    # plt.figure()
-    # plt.plot(Fx_hist[:,2], label="F_x(RL)")
-    # plt.plot(Fx_hist[:,3], label="F_x(RR)")
-    # plt.plot(Fx_hist[:,2] - Fx_hist[:,3], label="F_x(RL) - F_x(RR)")
-    # plt.axvline(N_settle, linestyle="--")
-    # plt.legend()
-    # plt.title("Wheel longitudal force differences (rear)")
-    # plt.show()
+    plt.figure()
+    plt.plot(Fx_hist[:,2], label="F_x(RL)")
+    plt.plot(Fx_hist[:,3], label="F_x(RR)")
+    plt.plot(Fx_hist[:,2] - Fx_hist[:,3], label="F_x(RL) - F_x(RR)")
+    plt.axvline(N_settle, linestyle="--")
+    plt.legend()
+    plt.title("Wheel longitudal force differences (rear)")
+    plt.show()
 
     # Kappa plot per wheel
     # plt.figure()
@@ -177,13 +192,6 @@ def main():
     # plt.legend()
     # plt.title("Wheel longitudal forces")
     # plt.show()
-
-    plt.figure()
-    plt.plot(errHist)
-    plt.legend()
-    plt.title("Norm erorr between velocity representations")
-    plt.show()
-
 
 if __name__ == "__main__":
     main()
