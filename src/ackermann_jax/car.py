@@ -18,6 +18,7 @@ def smooth_relu(x, eps=1e-4):
     return eps * jnp.log1p(jnp.exp(x / eps))
 
 ## Pytree friendly dataclasses
+#TODO: add print methods for dataclasses for debugging/interactivity
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -81,20 +82,31 @@ class AckermannGeometry:
     def tree_unflatten(cls, aux, children):
         return cls(*children)
 
-    def ackermann_front_angles(self, delta: Array, eps: float = 1e6) -> Array:
+    def ackermann_front_angles(self, delta: Array, eps: float = 1e-6) -> Array:
+        """
+        delta: steering angle of the front wheels (positive = left turn)
+        Returns [delta_FL, delta_FR, 0, 0]
+        """
+        # near zero steer: avoid division blowup; Ackermann ~= bicycle
+        near0 = jnp.abs(delta) < eps
+
         tan_delta = jnp.tan(delta)
-        tan_delta = jnp.where(jnp.abs(tan_delta) < eps, jnp.sign(tan_delta) * eps + eps, tan_delta)
-        R_turn = self.L / tan_delta
+        # turning radius of the bicycle model (center of rear axle)
+        R = self.L / tan_delta
 
-        denom_L = (R_turn - self.W / 2.0)
-        denom_R = (R_turn + self.W / 2.0)
-        denom_L = jnp.where(jnp.abs(denom_L) < eps, jnp.sign(denom_L) * eps + eps, denom_L)
-        denom_R = jnp.where(jnp.abs(denom_R) < eps, jnp.sign(denom_R) * eps + eps, denom_R)
+        # Ackermann: inside wheel has smaller radius magnitude
+        # For delta > 0 (left): FL is inside (R - W/2), FR is outside (R + W/2)
+        denom_FL = R - self.W / 2.0
+        denom_FR = R + self.W / 2.0
 
-        delta_FL = jnp.arctan(self.L / denom_L)
-        delta_FR = jnp.arctan(self.L / denom_R)
+        delta_FL = jnp.arctan2(self.L, denom_FL)
+        delta_FR = jnp.arctan2(self.L, denom_FR)
 
-        return jnp.array([delta_FL, delta_FR, 0.0, 0.0],dtype=jnp.float32)
+        # If delta is tiny, return 0 (or return delta for both fronts)
+        delta_FL = jnp.where(near0, delta, delta_FL)
+        delta_FR = jnp.where(near0, delta, delta_FR)
+
+        return jnp.array([delta_FL, delta_FR, 0.0, 0.0], dtype=jnp.float32)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -426,7 +438,7 @@ class AckermannCarModel:
         rw = self.params.geom.wheel_radius
         eps_v = self.params.tires.eps_v
         # denom = jnp.maximum(eps_v,jnp.abs(v_t))
-        denom = jnp.maximum(jnp.sqrt(v_t * v_t + eps_v * eps_v),eps_v)
+        denom = jnp.sqrt(v_t * v_t + eps_v * eps_v)
         kappa = (rw * omega_w - v_t) / denom
         alpha = jnp.arctan2(v_n, jnp.abs(v_t) + eps_v)
         alpha = 0.5 * jnp.tanh(alpha / 0.5)
@@ -436,6 +448,7 @@ class AckermannCarModel:
         tp = self.params.tires
         Fx_star = tp.C_kappa * kappa
         Fy_star = -tp.C_alpha * alpha
+        # Fx_star = 0
 
         Fmax = tp.mu * Fz
         mag = jnp.sqrt(Fx_star * Fx_star + Fy_star * Fy_star + tp.eps_force)

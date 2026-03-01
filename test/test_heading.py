@@ -92,6 +92,7 @@ def main():
             integral_state=integ,
             Kp=Kp_v,
             Ki=Ki_v,
+            dt = dt,
             tau_max=tau_max,
             use_traction_limit=True
         )
