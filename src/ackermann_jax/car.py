@@ -435,11 +435,25 @@ class AckermannCarModel:
         return jnp.maximum(0.0, Fz)
 
     def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
+        """
+        Wheel slip function
+
+        Parameters:
+        omega_w: (4,) angular velocity of the wheels in wheel frame
+        v_t: (4,) tangential velocity of the wheel contact patch in the direction of the wheel plane
+        v_n: (4,) normal velocity of the wheel contact patch
+
+        Returns:
+        kappa: (4,) longitudinal slip ratio
+        alpha: (4,) slip angle
+        """
+        kappa_max = 2.0
         rw = self.params.geom.wheel_radius
         eps_v = self.params.tires.eps_v
         # denom = jnp.maximum(eps_v,jnp.abs(v_t))
         denom = jnp.sqrt(v_t * v_t + eps_v * eps_v)
-        kappa = (rw * omega_w - v_t) / denom
+        kappa_prior = (rw * omega_w - v_t) / denom
+        kappa = kappa_max * jnp.tanh(kappa_prior / kappa_max)
         alpha = jnp.arctan2(v_n, jnp.abs(v_t) + eps_v)
         alpha = 0.5 * jnp.tanh(alpha / 0.5)
         return kappa, alpha
@@ -568,7 +582,15 @@ def default_params() -> AckermannCarParams:
     #TODO: I_body should be a function from jaxsim/URDF file
     chassis = ChassisParams(mass=mass,I_body=I_body,g=9.81)
 
-    wheels = WheelParams(I_w=0.001, b_w=0.01) # these need to be dynamically determined as well
+    # choose wheel mass to be about 0.05 kg
+    m_wheel = 0.05 # kg
+    fac = 2 # inertia scale factor
+    I_w = fac * 0.5 * m_wheel * geom.wheel_radius**2
+    print("Wheel inertia:", I_w)
+    # we want wheels to settle within about 0.1s, so:
+    tau_spin = 0.2 # seconds
+    b_w = I_w / tau_spin
+    wheels = WheelParams(I_w=I_w, b_w=b_w) # these need to be dynamically determined as well
     tires = TireParams(mu=0.9, C_kappa=30.0, C_alpha=25.0,eps_v=1e-3)
     contact = ContactParams(k_n=2e3,c_n=50,z0=0.0)
 
@@ -604,5 +626,4 @@ def pack_input(delta: float, tau_w: Array) -> AckermannCarInput:
         delta = jnp.array(delta, dtype=jnp.float32),
         tau_w=tau_w.astype(jnp.float32)
     )
-
 
