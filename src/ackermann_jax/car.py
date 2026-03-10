@@ -398,7 +398,7 @@ class AckermannCarModel:
         else:
             alpha = p.motor.alpha
 
-        Fx_i_cmd = mask * alpha * Fx_cmd
+        Fx_i_cmd = alpha * Fx_cmd
 
         if use_traction_limit:
             r_B = p.geom.wheel_contact_points_body()
