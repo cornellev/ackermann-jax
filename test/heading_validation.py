@@ -37,8 +37,8 @@ def run_model(
     T_turn=2.0,
     v_cmd=1.0,
     delta_turn=0.25,
-    Kp_v=40.0,
-    Ki_v=2.0,
+    Kp_v=10.0,
+    Ki_v=4.0,
     tau_max=2.0,
     integ_max=0.5,
     method="semi_implicit_euler",
@@ -438,6 +438,7 @@ def main():
         model, x0, dt, T_settle, T_straight, T_turn, v_cmd, -delta_turn
     )
     print_validation_report("right turn", metrics_R)
+    plot_validation(out_R, aux_R, T_settle, T_straight, title_prefix="Right turn")
 
     sym = compute_symmetry_metrics(out_L, out_R, T_settle)
     print("\n" + "=" * 72)

@@ -413,7 +413,7 @@ class AckermannCarModel:
         tau_w = jnp.clip(tau_w, -tau_max, tau_max)
 
         #anti wind up logic
-        sat = jnp.any(jnp.abs(tau_w) >= tau_max + 1e6)
+        sat = jnp.any(jnp.abs(tau_w) >= tau_max + 1e-6)
 
         integ_next = jnp.where(sat, integral_state, integ_cand)
 
@@ -588,7 +588,7 @@ def default_params() -> AckermannCarParams:
     I_w = fac * 0.5 * m_wheel * geom.wheel_radius**2
     print("Wheel inertia:", I_w)
     # we want wheels to settle within about 0.1s, so:
-    tau_spin = 0.2 # seconds
+    tau_spin = 2.0 # seconds #NOTE: wheel damping was too high here causing issues
     b_w = I_w / tau_spin
     wheels = WheelParams(I_w=I_w, b_w=b_w) # these need to be dynamically determined as well
     tires = TireParams(mu=0.9, C_kappa=30.0, C_alpha=25.0,eps_v=1e-3)
