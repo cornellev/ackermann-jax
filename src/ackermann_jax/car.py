@@ -631,12 +631,14 @@ def pack_input(delta: float, tau_w: Array) -> AckermannCarInput:
 # -- EKF Functions for Jacobians and things --
 
 def rotation_error(R_ref: jaxlie.SO3, R: jaxlie.SO3):
-    return (R_ref.inv() * R).log()
+    Rref = R_ref.as_matrix()
+    Rdef = R.as_matrix()
+    return jaxlie.SO3.from_matrix(Rref.T @ Rdef).log()
 
 def inject_rotation_error(R_nom, dtheta):
     return R_nom @ jaxlie.SO3.exp(dtheta)
 
-@jax.tree.utili.register_pytree_node_class
+@jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class AckermannCarErrorState:
     dp_W: Array
