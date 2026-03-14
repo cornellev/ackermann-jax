@@ -1,4 +1,3 @@
-#TODO: plot torques in body frame, and make sure that they are constant, and try and see where the inconsistency is coming from.
 from __future__ import annotations
 import addcopyfighandler
 import jax
