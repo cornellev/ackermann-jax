@@ -137,50 +137,55 @@ def main():
     plt.title("Yaw (should stay ~0 after settle)")
     plt.show()
 
-    # wheel torques
+    # plot front wheel speeds
     plt.figure()
-    plt.plot(tau_hist[:,0], label="tau_FL")
-    plt.plot(tau_hist[:,1], label="tau_FR")
-    plt.plot(tau_hist[:,2], label="tau_RL")
-    plt.plot(tau_hist[:,3], label="tau_RR")
-    plt.axvline(N_settle, linestyle="--")
-    plt.legend()
-    plt.title("Wheel torques")
+    plt.plot(t, omega_hist[:,0] - omega_hist[:,1], label="omega_FL")
     plt.show()
+
+    # wheel torques
+    # plt.figure()
+    # plt.plot(tau_hist[:,0], label="tau_FL")
+    # plt.plot(tau_hist[:,1], label="tau_FR")
+    # plt.plot(tau_hist[:,2], label="tau_RL")
+    # plt.plot(tau_hist[:,3], label="tau_RR")
+    # plt.axvline(N_settle, linestyle="--")
+    # plt.legend()
+    # plt.title("Wheel torques")
+    # plt.show()
 
     # wheel normal forces 
-    plt.figure()
-    plt.plot(Fx_hist[:,0], label="F_x(FL)")
-    plt.plot(Fx_hist[:,1], label="F_x(FR)")
-    plt.plot(Fx_hist[:,2], label="F_x(RL)")
-    plt.plot(Fx_hist[:,3], label="F_x(RR)")
-    plt.axvline(N_settle, linestyle="--")
-    plt.legend()
-    plt.title("Wheel longitudal forces")
-    plt.show()
-
-    plt.figure()
-    plt.plot(Fz_hist[:,0], label="F_z(FL)")
-    plt.plot(Fz_hist[:,1], label="F_z(FR)")
-    plt.plot(Fz_hist[:,2], label="F_z(RL)")
-    plt.plot(Fz_hist[:,3], label="F_z(RR)")
-    plt.axvline(N_settle, linestyle="--")
-    plt.legend()
-    plt.title("Wheel normal forces")
-    plt.show()
-
+    # plt.figure()
+    # plt.plot(Fx_hist[:,0], label="F_x(FL)")
+    # plt.plot(Fx_hist[:,1], label="F_x(FR)")
+    # plt.plot(Fx_hist[:,2], label="F_x(RL)")
+    # plt.plot(Fx_hist[:,3], label="F_x(RR)")
+    # plt.axvline(N_settle, linestyle="--")
+    # plt.legend()
+    # plt.title("Wheel longitudal forces")
+    # plt.show()
+    #
+    # plt.figure()
+    # plt.plot(Fz_hist[:,0], label="F_z(FL)")
+    # plt.plot(Fz_hist[:,1], label="F_z(FR)")
+    # plt.plot(Fz_hist[:,2], label="F_z(RL)")
+    # plt.plot(Fz_hist[:,3], label="F_z(RR)")
+    # plt.axvline(N_settle, linestyle="--")
+    # plt.legend()
+    # plt.title("Wheel normal forces")
+    # plt.show()
+    #
    
 
     # Difference of front normal forces
-    plt.figure()
-    plt.plot(Fx_hist[:,2], label="F_x(RL)")
-    plt.plot(Fx_hist[:,3], label="F_x(RR)")
-    plt.plot(Fx_hist[:,2] - Fx_hist[:,3], label="F_x(RL) - F_x(RR)")
-    plt.axvline(N_settle, linestyle="--")
-    plt.legend()
-    plt.title("Wheel longitudal force differences (rear)")
-    plt.show()
-
+    # plt.figure()
+    # plt.plot(Fx_hist[:,2], label="F_x(RL)")
+    # plt.plot(Fx_hist[:,3], label="F_x(RR)")
+    # plt.plot(Fx_hist[:,2] - Fx_hist[:,3], label="F_x(RL) - F_x(RR)")
+    # plt.axvline(N_settle, linestyle="--")
+    # plt.legend()
+    # plt.title("Wheel longitudal force differences (rear)")
+    # plt.show()
+    #
     # Kappa plot per wheel
     # plt.figure()
     # plt.plot(Fx_hist[:,0], label="F_x(FL)")

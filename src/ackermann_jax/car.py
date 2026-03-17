@@ -81,7 +81,15 @@ class AckermannGeometry:
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        return cls(*children)
+        L, W, a, b, h, wheel_radius = children
+        return cls(
+            jnp.asarray(L, dtype=jnp.float32),
+            jnp.asarray(W, dtype=jnp.float32),
+            jnp.asarray(a, dtype=jnp.float32),
+            jnp.asarray(b, dtype=jnp.float32),
+            jnp.asarray(h, dtype=jnp.float32),
+            jnp.asarray(wheel_radius, dtype=jnp.float32),
+        )
 
     def ackermann_front_angles(self, delta: Array, eps: float = 1e-6) -> Array:
         """
@@ -126,7 +134,11 @@ class ContactParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         k_n, c_n, z0 = children
-        return cls(k_n, c_n, z0)
+        return cls(
+            jnp.asarray(k_n, dtype=jnp.float32),
+            jnp.asarray(c_n, dtype=jnp.float32),
+            jnp.asarray(z0, dtype=jnp.float32),
+        )
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -150,7 +162,13 @@ class TireParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         mu, Ck, Ca, eps_v, eps_f = children
-        return cls(mu, Ck, Ca, eps_v, eps_f)
+        return cls(
+            jnp.asarray(mu, dtype=jnp.float32),
+            jnp.asarray(Ck, dtype=jnp.float32),
+            jnp.asarray(Ca, dtype=jnp.float32),
+            jnp.asarray(eps_v, dtype=jnp.float32),
+            jnp.asarray(eps_f, dtype=jnp.float32),
+        )
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -169,7 +187,10 @@ class WheelParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         I_w, b_w = children
-        return cls(I_w, b_w)
+        return cls(
+            jnp.asarray(I_w, dtype=jnp.float32),
+            jnp.asarray(b_w, dtype=jnp.float32),
+        )
 
 
 @jax.tree_util.register_pytree_node_class
@@ -190,7 +211,11 @@ class ChassisParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         mass, I_body, g = children
-        return cls(mass, I_body, g)
+        return cls(
+            jnp.asarray(mass, dtype=jnp.float32),
+            I_body,
+            jnp.asarray(g, dtype=jnp.float32),
+        )
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -585,7 +610,7 @@ def default_params() -> AckermannCarParams:
     m_wheel = 0.05 # kg
     fac = 2 # inertia scale factor
     I_w = fac * 0.5 * m_wheel * geom.wheel_radius**2
-    print("Wheel inertia:", I_w)
+    # print("Wheel inertia:", I_w)
     # we want wheels to settle within about 0.1s, so:
     tau_spin = 2.0 # seconds #NOTE: wheel damping was too high here causing issues
     b_w = I_w / tau_spin
