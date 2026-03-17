@@ -79,6 +79,7 @@ class AckermannGeometry:
         aux = None
         return children, aux
 
+    @classmethod
     def tree_unflatten(cls, aux, children):
         return cls(*children)
 
@@ -86,27 +87,25 @@ class AckermannGeometry:
         """
         delta: steering angle of the front wheels (positive = left turn)
         Returns [delta_FL, delta_FR, 0, 0]
+
+        Uses lax.cond instead of jnp.where so that only the selected branch's
+        gradient is evaluated.  jnp.where evaluates both branches' gradients,
+        which causes NaN in d/dL via the L/tan(0)=inf path even when the
+        near-zero branch is selected.
         """
-        # near zero steer: avoid division blowup; Ackermann ~= bicycle
-        near0 = jnp.abs(delta) < eps
+        def _near_zero(_):
+            return jnp.array([delta, delta, 0.0, 0.0], dtype=jnp.float32)
 
-        tan_delta = jnp.tan(delta)
-        # turning radius of the bicycle model (center of rear axle)
-        R = self.L / tan_delta
+        def _ackermann(_):
+            tan_delta = jnp.tan(delta)
+            R = self.L / tan_delta
+            denom_FL = R - self.W / 2.0
+            denom_FR = R + self.W / 2.0
+            delta_FL = jnp.arctan2(self.L, denom_FL)
+            delta_FR = jnp.arctan2(self.L, denom_FR)
+            return jnp.array([delta_FL, delta_FR, 0.0, 0.0], dtype=jnp.float32)
 
-        # Ackermann: inside wheel has smaller radius magnitude
-        # For delta > 0 (left): FL is inside (R - W/2), FR is outside (R + W/2)
-        denom_FL = R - self.W / 2.0
-        denom_FR = R + self.W / 2.0
-
-        delta_FL = jnp.arctan2(self.L, denom_FL)
-        delta_FR = jnp.arctan2(self.L, denom_FR)
-
-        # If delta is tiny, return 0 (or return delta for both fronts)
-        delta_FL = jnp.where(near0, delta, delta_FL)
-        delta_FR = jnp.where(near0, delta, delta_FR)
-
-        return jnp.array([delta_FL, delta_FR, 0.0, 0.0], dtype=jnp.float32)
+        return jax.lax.cond(jnp.abs(delta) < eps, _near_zero, _ackermann, None)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -127,7 +126,7 @@ class ContactParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         k_n, c_n, z0 = children
-        return cls(float(k_n), float(c_n), float(z0))
+        return cls(k_n, c_n, z0)
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -151,7 +150,7 @@ class TireParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         mu, Ck, Ca, eps_v, eps_f = children
-        return cls(float(mu), float(Ck), float(Ca), float(eps_v), float(eps_f))
+        return cls(mu, Ck, Ca, eps_v, eps_f)
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -170,7 +169,7 @@ class WheelParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         I_w, b_w = children
-        return cls(float(I_w), float(b_w))
+        return cls(I_w, b_w)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -191,7 +190,7 @@ class ChassisParams:
     @classmethod
     def tree_unflatten(cls, aux, children):
         mass, I_body, g = children
-        return cls(float(mass), I_body, float(g))
+        return cls(mass, I_body, g)
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -688,12 +687,12 @@ def state_difference(
     x: AckermannCarState
 ) -> AckermannCarErrorState:
     return AckermannCarErrorState(
-        dp_W = x_ref.p_W - x.p_W,
+        dp_W = x.p_W - x_ref.p_W,
         dtheta_B = rotation_error(x_ref.R_WB, x.R_WB),
-        dv_W = x_ref.v_W - x.v_W,
-        dw_B = x_ref.w_B - x.w_B,
-        domega_W = x_ref.omega_W - x.omega_W
-)
+        dv_W = x.v_W - x_ref.v_W,
+        dw_B = x.w_B - x_ref.w_B,
+        domega_W = x.omega_W - x_ref.omega_W
+    )
 
 def pack_error_state(dx: AckermannCarErrorState) -> Array:
     return jnp.concatenate([
