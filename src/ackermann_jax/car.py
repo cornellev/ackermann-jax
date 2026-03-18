@@ -455,7 +455,7 @@ class AckermannCarModel:
         d = z0-z
         ddot = -vz
 
-        Fz = k_n * smooth_relu(d) + c_n * smooth_relu(ddot) * (d > 0)
+        Fz = k_n * jax.nn.relu(d) + c_n * jax.nn.relu(ddot) * (d > 0)
         return jnp.maximum(0.0, Fz)
 
     def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
