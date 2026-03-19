@@ -36,11 +36,16 @@ def run_model(
     T_straight=2.0,
     T_turn=2.0,
     v_cmd=1.0,
-    delta_turn=0.25,
+    psi_rate_cmd=1.0,
     Kp_v=10.0,
     Ki_v=4.0,
     tau_max=2.0,
-    integ_max=0.5,
+    integ_max_v=0.5,
+    Kp_s=1.5,
+    Ki_s=0.2,
+    Kd_s=0.5,
+    delta_max=0.35,
+    integ_max_s=0.5,
     method="semi_implicit_euler",
 ):
     N_settle = int(T_settle / dt)
@@ -48,28 +53,44 @@ def run_model(
     N_turn = int(T_turn / dt)
     N = N_settle + N_straight + N_turn
 
+    t_turn_start = T_settle + T_straight
+
     def v_cmd_schedule(k):
         return jnp.where(k < N_settle, 0.0, v_cmd)
 
-    def delta_schedule(k):
-        return jnp.where(k < (N_settle + N_straight), 0.0, delta_turn)
+    def psi_cmd_schedule(k):
+        t = k * dt
+        turn_elapsed = jnp.maximum(0.0, t - t_turn_start)
+        return jnp.where(k < (N_settle + N_straight), 0.0, psi_rate_cmd * turn_elapsed)
 
     def step_once(carry, k):
-        x, integ = carry
+        x, integ_v, integ_s = carry
 
         v_ref = v_cmd_schedule(k)
-        delta = delta_schedule(k)
+        psi_cmd = psi_cmd_schedule(k)
 
-        tau_w, integ_next = model.map_velocity_to_wheel_torques(
+        tau_w, integ_v_next = model.map_velocity_to_wheel_torques(
             x=x,
             v_cmd=v_ref,
-            integral_state=integ,
+            integral_state=integ_v,
             dt=dt,
             Kp=Kp_v,
             Ki=Ki_v,
             tau_max=tau_max,
-            integ_max=integ_max,
+            integ_max=integ_max_v,
             use_traction_limit=True,
+        )
+
+        delta, integ_s_next = model.map_heading_to_steering(
+            x=x,
+            psi_cmd=psi_cmd,
+            integral_state=integ_s,
+            dt=dt,
+            Kp=Kp_s,
+            Ki=Ki_s,
+            Kd=Kd_s,
+            delta_max=delta_max,
+            integ_max=integ_max_s,
         )
 
         u = AckermannCarInput(delta=delta, tau_w=tau_w)
@@ -88,14 +109,19 @@ def run_model(
             "yaw": yaw,
             "tau_w": tau_w,
             "delta": delta,
+            "psi_cmd": psi_cmd,
             "v_cmd": v_ref,
         }
-        return (x_next, integ_next), log
+        return (x_next, integ_v_next, integ_s_next), log
 
     ks = jnp.arange(N, dtype=jnp.int32)
-    (_, _), logs = jax.lax.scan(
+    (_, _, _), logs = jax.lax.scan(
         step_once,
-        (x0, jnp.array(0.0, dtype=jnp.float32)),
+        (
+            x0,
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+        ),
         ks,
     )
 
@@ -310,11 +336,22 @@ def plot_validation(out, aux, T_settle, T_straight, title_prefix=""):
     plt.figure()
     plt.plot(t, jnp.rad2deg(wrap_pi(yaw)), label="yaw actual [deg]")
     plt.plot(t, jnp.rad2deg(wrap_pi(yaw_exp)), "--", label="yaw expected [deg]")
+    plt.plot(t, jnp.rad2deg(out["psi_cmd"]), ":", label="psi_cmd [deg]")
     plt.axvline(T_settle, linestyle="--")
     plt.axvline(T_settle + T_straight, linestyle="--")
     plt.xlabel("t [s]")
     plt.ylabel("yaw [deg]")
     plt.title(f"{title_prefix} yaw")
+    plt.legend()
+
+    # Steering angle
+    plt.figure()
+    plt.plot(t, jnp.rad2deg(out["delta"]), label="delta [deg]")
+    plt.axvline(T_settle, linestyle="--")
+    plt.axvline(T_settle + T_straight, linestyle="--")
+    plt.xlabel("t [s]")
+    plt.ylabel("delta [deg]")
+    plt.title(f"{title_prefix} steering angle")
     plt.legend()
 
     # Yaw rate
@@ -365,6 +402,9 @@ def plot_validation(out, aux, T_settle, T_straight, title_prefix=""):
 
 
 def run_case(model, x0, dt, T_settle, T_straight, T_turn, v_cmd, delta_turn):
+    L = float(model.params.geom.L)
+    psi_rate_cmd = v_cmd / L * float(jnp.tan(jnp.array(delta_turn)))
+
     out = run_model(
         model=model,
         x0=x0,
@@ -373,11 +413,16 @@ def run_case(model, x0, dt, T_settle, T_straight, T_turn, v_cmd, delta_turn):
         T_straight=T_straight,
         T_turn=T_turn,
         v_cmd=v_cmd,
-        delta_turn=delta_turn,
+        psi_rate_cmd=psi_rate_cmd,
         Kp_v=40.0,
         Ki_v=2.0,
         tau_max=0.35,
-        integ_max=0.5,
+        integ_max_v=0.5,
+        Kp_s=1.5,
+        Ki_s=0.2,
+        Kd_s=0.5,
+        delta_max=0.35,
+        integ_max_s=0.5,
     )
     metrics, aux = compute_validation_metrics(
         out=out,

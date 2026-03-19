@@ -445,6 +445,54 @@ class AckermannCarModel:
 
 
 
+    def map_heading_to_steering(
+        self,
+        x: AckermannCarState,
+        psi_cmd: Array,
+        integral_state: Array,
+        dt: float,
+        Kp: float = 1.5,
+        Ki: float = 0.2,
+        Kd: float = 0.5,
+        delta_max: float = 0.35,
+        integ_max: float = 0.5,
+    ) -> Tuple[Array, Array]:
+        """
+        PID controller that maps a desired heading to a steering angle delta.
+
+        Analogous to map_velocity_to_wheel_torques for the motor.
+
+        Parameters:
+            psi_cmd:        desired heading angle [rad], world frame
+            integral_state: scalar integral of heading error (carry between steps)
+            Kp, Ki, Kd:     PID gains
+            delta_max:      saturation limit on steering angle [rad]
+            integ_max:      anti-windup clamp on integral [rad·s]
+
+        Returns:
+            delta:      steering angle command [rad]
+            integ_next: updated integral state
+        """
+        R = x.R_WB.as_matrix()
+        yaw = jnp.arctan2(R[1, 0], R[0, 0])
+
+        e_psi = psi_cmd - yaw
+        # wrap to [-pi, pi]
+        e_psi = jnp.mod(e_psi + jnp.pi, 2.0 * jnp.pi) - jnp.pi
+
+        integ_cand = jnp.clip(integral_state + e_psi * dt, -integ_max, integ_max)
+
+        r = x.w_B[2]  # yaw rate (z-component of body angular velocity)
+
+        delta = Kp * e_psi + Ki * integ_cand - Kd * r
+        delta = jnp.clip(delta, -delta_max, delta_max)
+
+        # anti-windup: freeze integrator when saturated
+        sat = jnp.abs(delta) >= delta_max - 1e-6
+        integ_next = jnp.where(sat, integral_state, integ_cand)
+
+        return delta, integ_next
+
     def _normal_forces(self, p_i_W: Array, v_i_W: Array) -> Array:
         k_n = self.params.contact.k_n
         c_n = self.params.contact.c_n
