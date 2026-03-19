@@ -451,9 +451,9 @@ class AckermannCarModel:
         psi_cmd: Array,
         integral_state: Array,
         dt: float,
-        Kp: float = 1.5,
-        Ki: float = 0.2,
-        Kd: float = 0.5,
+        Kp: float = 3.0,
+        Ki: float = 2.0,
+        Kd: float = 0.4,
         delta_max: float = 0.35,
         integ_max: float = 0.5,
     ) -> Tuple[Array, Array]:
@@ -472,6 +472,15 @@ class AckermannCarModel:
         Returns:
             delta:      steering angle command [rad]
             integ_next: updated integral state
+
+        Pole placement (linearised about v, L):
+            Plant:  ψ̇ = (v/L)·δ  →  G(s) = a/s,  a = v/L
+            Closed-loop char. poly:
+                (1 + a·Kd)·s² + a·Kp·s + a·Ki = 0
+                ωn  = sqrt(a·Ki / (1 + a·Kd))
+                ζ   = a·Kp / (2·sqrt(a·Ki·(1 + a·Kd)))
+            Default gains target ζ≈1.3, poles at s≈{-0.81, -3.74} at v=1 m/s, L=0.26 m.
+            Both poles are real (overdamped) → no oscillation.
         """
         R = x.R_WB.as_matrix()
         yaw = jnp.arctan2(R[1, 0], R[0, 0])

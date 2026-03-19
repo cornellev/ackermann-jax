@@ -418,9 +418,9 @@ def run_case(model, x0, dt, T_settle, T_straight, T_turn, v_cmd, delta_turn):
         Ki_v=2.0,
         tau_max=0.35,
         integ_max_v=0.5,
-        Kp_s=1.5,
-        Ki_s=0.2,
-        Kd_s=0.5,
+        Kp_s=3.0,
+        Ki_s=2.0,
+        Kd_s=0.4,
         delta_max=0.35,
         integ_max_s=0.5,
     )
