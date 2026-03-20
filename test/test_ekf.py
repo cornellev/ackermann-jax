@@ -451,34 +451,44 @@ def plot_ekf_vs_truth(
     fig.suptitle(f"{title_prefix} — Wheel speeds")
     fig.tight_layout()
 
-    # ── Yaw: overlay + error with ±2σ ──
+    # ── Roll, Pitch, Yaw: overlay + error with ±2σ ──
+    def _roll_pitch(wxyz):
+        R = jaxlie.SO3(wxyz).as_matrix()
+        pitch = jnp.arcsin(-R[2, 0])
+        roll = jnp.arctan2(R[2, 1], R[2, 2])
+        return roll, pitch
+
+    roll_true, pitch_true = jax.vmap(_roll_pitch)(stateHist.R_WB.wxyz[start_idx:])
+    roll_ekf, pitch_ekf = jax.vmap(_roll_pitch)(ekf_hist.x_nom.R_WB.wxyz)
     yaw_true = jax.vmap(lambda q: jaxlie.SO3(q).compute_yaw_radians())(
         stateHist.R_WB.wxyz[start_idx:]
     )
     yaw_ekf = jax.vmap(lambda q: jaxlie.SO3(q).compute_yaw_radians())(
         ekf_hist.x_nom.R_WB.wxyz
     )
-    sigma_yaw = _sigma_band(ekf_hist.P, slice(5, 6))  # yaw is theta_z
+    sigma_theta = _sigma_band(ekf_hist.P, _P_IDX["theta"])  # (N, 3): roll=0, pitch=1, yaw=2
 
-    fig, axes = plt.subplots(1, 2, sharex=True, figsize=(14, 4))
-    axes[0].plot(t, jnp.rad2deg(yaw_true), "k-", label="truth")
-    axes[0].plot(t, jnp.rad2deg(yaw_ekf), "r--", label="EKF")
-    axes[0].set_ylabel("yaw [deg]")
-    axes[0].set_xlabel("t [s]")
-    axes[0].legend(fontsize=8)
-    axes[0].set_title("Overlay")
-
-    yaw_err = jnp.rad2deg(yaw_ekf - yaw_true)
-    sigma_yaw_deg = jnp.rad2deg(sigma_yaw[:, 0])
-    axes[1].plot(t, yaw_err, "b-", linewidth=0.8)
-    axes[1].fill_between(
-        t, -sigma_yaw_deg, sigma_yaw_deg, alpha=0.25, color="r"
-    )
-    axes[1].set_ylabel("Δyaw [deg]")
-    axes[1].set_xlabel("t [s]")
-    axes[1].axhline(0, color="k", linewidth=0.3)
-    axes[1].set_title("Error  ± 2σ")
-    fig.suptitle(f"{title_prefix} — Yaw")
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    for i, (name, true_ang, ekf_ang, sigma_col) in enumerate([
+        ("roll",  roll_true,  roll_ekf,  0),
+        ("pitch", pitch_true, pitch_ekf, 1),
+        ("yaw",   yaw_true,   yaw_ekf,   2),
+    ]):
+        axes[i, 0].plot(t, jnp.rad2deg(true_ang), "k-", label="truth")
+        axes[i, 0].plot(t, jnp.rad2deg(ekf_ang), "r--", label="EKF")
+        axes[i, 0].set_ylabel(f"{name} [deg]")
+        axes[i, 0].legend(fontsize=8)
+        err = jnp.rad2deg(ekf_ang - true_ang)
+        sigma_deg = jnp.rad2deg(sigma_theta[:, sigma_col])
+        axes[i, 1].plot(t, err, "b-", linewidth=0.8)
+        axes[i, 1].fill_between(t, -sigma_deg, sigma_deg, alpha=0.25, color="r")
+        axes[i, 1].set_ylabel(f"Δ{name} [deg]")
+        axes[i, 1].axhline(0, color="k", linewidth=0.3)
+    axes[0, 0].set_title("Overlay")
+    axes[0, 1].set_title("Error  ± 2σ")
+    axes[-1, 0].set_xlabel("t [s]")
+    axes[-1, 1].set_xlabel("t [s]")
+    fig.suptitle(f"{title_prefix} — Roll, Pitch & Yaw")
     fig.tight_layout()
 
     plt.show()
