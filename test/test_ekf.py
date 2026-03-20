@@ -316,11 +316,23 @@ def _sigma_band(P_hist, idx_slice):
 
 
 def plot_ekf_vs_truth(
-    logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
+    logs,
+    stateHist,
+    ekf_hist,
+    start_idx=0,
+    title_prefix="EKF",
+    measurements=None,
+    meas_stride=5,
 ):
     """
     Compare EKF estimates against ground truth.
     Plots both the overlay (truth vs EKF) and the error with ±2σ bounds.
+
+    If *measurements* is provided it should be a dict with keys
+    ``"gps"``, ``"gyro"``, ``"gravity"``, ``"wheels"`` holding the
+    full-length noisy measurement arrays.  They are sliced from
+    *start_idx* and down-sampled by *meas_stride* before plotting as
+    scatter points on the overlay panels.
     """
     t = logs["t"][start_idx:]
     truth_p = stateHist.p_W[start_idx:]
@@ -333,16 +345,27 @@ def plot_ekf_vs_truth(
     ekf_w = ekf_hist.x_nom.w_B
     ekf_omega = ekf_hist.x_nom.omega_W
 
+    # Prepare down-sampled measurement scatter data
+    s = meas_stride
+    t_s = t[::s]
+    m_gps = measurements["gps"][start_idx:][::s] if measurements else None
+    m_gyro = measurements["gyro"][start_idx:][::s] if measurements else None
+    m_wheels = measurements["wheels"][start_idx:][::s] if measurements else None
+
+    meas_kw = dict(
+        s=8, alpha=0.35, zorder=1, color="C0", label="meas", edgecolors="none"
+    )
+
     # ── Position: overlay + error with ±2σ ──
     sigma_p = _sigma_band(ekf_hist.P, _P_IDX["p_W"])
     fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
     for i, lbl in enumerate(["x", "y", "z"]):
-        # Left: overlay
         axes[i, 0].plot(t, truth_p[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_p[:, i], "r--", label="EKF")
+        if m_gps is not None:
+            axes[i, 0].scatter(t_s, m_gps[:, i], **meas_kw)
         axes[i, 0].set_ylabel(f"p_{lbl} [m]")
         axes[i, 0].legend(fontsize=8)
-        # Right: error + covariance
         err = ekf_p[:, i] - truth_p[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(
@@ -357,7 +380,7 @@ def plot_ekf_vs_truth(
     fig.suptitle(f"{title_prefix} — Position")
     fig.tight_layout()
 
-    # ── Velocity: overlay + error with ±2σ ──
+    # ── Velocity: overlay + error with ±2σ  (no direct measurement) ──
     sigma_v = _sigma_band(ekf_hist.P, _P_IDX["v_W"])
     fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
     for i, lbl in enumerate(["vx", "vy", "vz"]):
@@ -385,6 +408,8 @@ def plot_ekf_vs_truth(
     for i, lbl in enumerate(["wx", "wy", "wz"]):
         axes[i, 0].plot(t, truth_w[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_w[:, i], "r--", label="EKF")
+        if m_gyro is not None:
+            axes[i, 0].scatter(t_s, m_gyro[:, i], **meas_kw)
         axes[i, 0].set_ylabel(f"{lbl} [rad/s]")
         axes[i, 0].legend(fontsize=8)
         err = ekf_w[:, i] - truth_w[:, i]
@@ -408,6 +433,8 @@ def plot_ekf_vs_truth(
     for i, name in enumerate(wheel_names):
         axes[i, 0].plot(t, truth_omega[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_omega[:, i], "r--", label="EKF")
+        if m_wheels is not None:
+            axes[i, 0].scatter(t_s, m_wheels[:, i], **meas_kw)
         axes[i, 0].set_ylabel(f"ω_{name} [rad/s]")
         axes[i, 0].legend(fontsize=8)
         err = ekf_omega[:, i] - truth_omega[:, i]
@@ -534,7 +561,16 @@ def main():
     print(f"EKF velocity RMSE:  {jnp.sqrt(jnp.mean(vel_err**2)):.6f} m/s")
 
     # ── Plot ──
-    plot_ekf_vs_truth(out_L, states_out, ekf_hist, start_idx=N_settle)
+    meas = {
+        "gps": z_gps,
+        "gyro": z_gyro,
+        "gravity": z_gravity,
+        "wheels": z_wheels,
+    }
+    plot_ekf_vs_truth(
+        out_L, states_out, ekf_hist,
+        start_idx=N_settle, measurements=meas,
+    )
 
 
 if __name__ == "__main__":
