@@ -16,6 +16,16 @@ from ackermann_jax import (
 from ackermann_jax.ekf import EKFState, ekf_predict, ekf_update, ERROR_DIM
 
 
+# Error-state index slices (must match pack/unpack_error_state ordering)
+_P_IDX = {
+    "p_W": slice(0, 3),
+    "theta": slice(3, 6),
+    "v_W": slice(6, 9),
+    "w_B": slice(9, 12),
+    "omega_W": slice(12, 16),
+}
+
+
 def yaw_from_R(R_WB: jaxlie.SO3) -> jnp.ndarray:
     return R_WB.compute_yaw_radians()
 
@@ -149,182 +159,300 @@ def run_case(model, x0, dt, T_settle, T_straight, T_turn, v_cmd, delta_turn):
     )
 
 
-# ── IMU measurement functions ────────────────────────────────────────
+# ── Measurement functions ─────────────────────────────────────────────
+#
+# Each h(x) maps AckermannCarState -> Array.
+# The EKF computes H = d(h ∘ inject_error) / d(dx) automatically via AD.
+
+
+def h_gps(x: AckermannCarState) -> Array:
+    """GPS: measures world-frame position."""
+    return x.p_W  # (3,)
+
 
 def h_gyro(x: AckermannCarState) -> Array:
-    """Gyroscope: directly measures body angular velocity w_B."""
+    """Gyroscope: measures body angular velocity."""
     return x.w_B  # (3,)
 
 
-def generate_imu_measurements(
-    model: AckermannCarModel,
+def h_wheels(x: AckermannCarState) -> Array:
+    """Wheel encoders: measures wheel angular velocities."""
+    return x.omega_W  # (4,)
+
+
+def make_h_gravity(g: float):
+    """
+    Gravity-in-body-frame measurement (simplified accelerometer).
+
+    Models the accelerometer as reading only the gravity vector
+    projected into the body frame:  h(x) = R_BW @ [0, 0, g]
+
+    This gives roll/pitch (tilt) observability without touching
+    the contact model, which is too nonlinear for the EKF to
+    linearize reliably.
+    """
+    g_up_W = jnp.array([0.0, 0.0, g], dtype=jnp.float32)
+
+    def h_gravity(x: AckermannCarState) -> Array:
+        R_BW = x.R_WB.as_matrix().T
+        return R_BW @ g_up_W  # (3,)
+
+    return h_gravity
+
+
+def generate_measurements(
     stateHist,
-    logs,
+    g: float,
+    R_gps: float,
     R_gyro: float,
-    R_accel: float,
+    R_gravity: float,
+    R_wheels: float,
     key,
 ):
     """
-    Generate noisy IMU measurements from a state history.
+    Generate noisy sensor measurements from a ground-truth state history.
 
-    Pattern:
-        z = h(x_true) + sqrt(R) * randn
+    Pattern:  z = h(x_true) + sqrt(R) * randn
     """
-    key_g, key_a = jax.random.split(key)
+    k1, k2, k3, k4 = jax.random.split(key, 4)
 
-    # ── Gyroscope: z_gyro = w_B + noise ──
-    z_gyro_true = stateHist.w_B  # (N, 3)
-    noise_gyro = jnp.sqrt(R_gyro) * jax.random.normal(key_g, z_gyro_true.shape)
-    z_gyro = z_gyro_true + noise_gyro
+    # GPS — position
+    z_gps = stateHist.p_W + jnp.sqrt(R_gps) * jax.random.normal(
+        k1, stateHist.p_W.shape
+    )
 
-    # ── Accelerometer: z_accel = R_BW @ (a_W - g_W) + noise ──
-    delta_hist = logs["delta"]  # (N,)
-    tau_w_hist = logs["tau_w"]  # (N, 4)
+    # Gyroscope — body angular velocity
+    z_gyro = stateHist.w_B + jnp.sqrt(R_gyro) * jax.random.normal(
+        k2, stateHist.w_B.shape
+    )
 
-    g_W = jnp.array([0.0, 0.0, -model.params.chassis.g], dtype=jnp.float32)
+    # Gravity (simplified accel) — R_BW @ [0,0,g]
+    g_up_W = jnp.array([0.0, 0.0, g], dtype=jnp.float32)
+    z_gravity_true = jax.vmap(
+        lambda wxyz: jaxlie.SO3(wxyz).as_matrix().T @ g_up_W
+    )(stateHist.R_WB.wxyz)
+    z_gravity = z_gravity_true + jnp.sqrt(R_gravity) * jax.random.normal(
+        k3, z_gravity_true.shape
+    )
 
-    def _single_accel(p_W, wxyz, v_W, w_B, omega_W, delta, tau_w):
-        x = AckermannCarState(
-            p_W=p_W,
-            R_WB=jaxlie.SO3(wxyz),
-            v_W=v_W,
-            w_B=w_B,
-            omega_W=omega_W,
-        )
-        u = AckermannCarInput(delta=delta, tau_w=tau_w)
-        xdot = model.xdot(x, u)
-        sf_W = xdot.v_W - g_W
-        R_BW = x.R_WB.as_matrix().T
-        return R_BW @ sf_W
+    # Wheel encoders — wheel angular velocities
+    z_wheels = stateHist.omega_W + jnp.sqrt(R_wheels) * jax.random.normal(
+        k4, stateHist.omega_W.shape
+    )
 
-    z_accel_true = jax.vmap(_single_accel)(
-        stateHist.p_W,
-        stateHist.R_WB.wxyz,
-        stateHist.v_W,
-        stateHist.w_B,
-        stateHist.omega_W,
-        delta_hist,
-        tau_w_hist,
-    )  # (N, 3)
-
-    noise_accel = jnp.sqrt(R_accel) * jax.random.normal(key_a, z_accel_true.shape)
-    z_accel = z_accel_true + noise_accel
-
-    return z_gyro, z_accel
+    return z_gps, z_gyro, z_gravity, z_wheels
 
 
-def run_ekf_imu(
+def run_ekf(
     model: AckermannCarModel,
     stateHist,
     logs,
+    z_gps,
     z_gyro,
-    z_accel,
+    z_gravity,
+    z_wheels,
+    R_gps_val: float,
     R_gyro_val: float,
-    R_accel_val: float,
+    R_gravity_val: float,
+    R_wheels_val: float,
     Q: Array,
     P0: Array,
     dt: float,
+    start_idx: int = 0,
 ):
     """
-    Run the EKF over the full trajectory using IMU (gyro + accel) measurements.
+    Run the EKF with sequential measurement updates.
 
-    At each step:
-      1. Predict with current input u
-      2. Update with gyroscope measurement
-      3. Update with accelerometer measurement (sequential update)
+    Per step:  predict → GPS → gyro → gravity → wheel encoders
+
+    Args:
+        start_idx: Index into stateHist / measurements to initialise from.
+                   Use this to skip transient phases (e.g. ground-contact
+                   settle) where the contact model's relu discontinuity
+                   makes the F Jacobian unreliable.
     """
-    N = z_gyro.shape[0]
-    delta_hist = logs["delta"]
-    tau_w_hist = logs["tau_w"]
+    delta_hist = logs["delta"][start_idx:]
+    tau_w_hist = logs["tau_w"][start_idx:]
 
+    z_gps_run = z_gps[start_idx:]
+    z_gyro_run = z_gyro[start_idx:]
+    z_gravity_run = z_gravity[start_idx:]
+    z_wheels_run = z_wheels[start_idx:]
+
+    R_gps_mat = R_gps_val * jnp.eye(3)
     R_gyro_mat = R_gyro_val * jnp.eye(3)
-    R_accel_mat = R_accel_val * jnp.eye(3)
+    R_gravity_mat = R_gravity_val * jnp.eye(3)
+    R_wheels_mat = R_wheels_val * jnp.eye(4)
 
-    x0 = jax.tree.map(lambda a: a[0], stateHist)
+    h_gravity = make_h_gravity(model.params.chassis.g)
+
+    x0 = jax.tree.map(lambda a: a[start_idx], stateHist)
     ekf0 = EKFState(x_nom=x0, P=P0)
-
-    g_W = jnp.array([0.0, 0.0, -model.params.chassis.g], dtype=jnp.float32)
 
     def _scan_body(ekf, k):
         u = AckermannCarInput(delta=delta_hist[k], tau_w=tau_w_hist[k])
 
-        # 1) Predict
-        ekf_pred = ekf_predict(model, ekf, u, Q, dt)
+        ekf = ekf_predict(model, ekf, u, Q, dt)
+        ekf = ekf_update(ekf, z_gps_run[k], h_gps, R_gps_mat)
+        ekf = ekf_update(ekf, z_gyro_run[k], h_gyro, R_gyro_mat)
+        ekf = ekf_update(ekf, z_gravity_run[k], h_gravity, R_gravity_mat)
+        ekf = ekf_update(ekf, z_wheels_run[k], h_wheels, R_wheels_mat)
 
-        # 2) Gyro update
-        ekf_g = ekf_update(ekf_pred, z_gyro[k], h_gyro, R_gyro_mat)
+        return ekf, ekf
 
-        # 3) Accel update (h depends on u at this step, so build a closure)
-        def _h_accel(x):
-            xdot = model.xdot(x, u)
-            sf_W = xdot.v_W - g_W
-            R_BW = x.R_WB.as_matrix().T
-            return R_BW @ sf_W
-
-        ekf_ga = ekf_update(ekf_g, z_accel[k], _h_accel, R_accel_mat)
-
-        return ekf_ga, ekf_ga
-
-    _, ekf_hist = jax.lax.scan(_scan_body, ekf0, jnp.arange(N))
+    N_run = z_gps_run.shape[0]
+    _, ekf_hist = jax.lax.scan(_scan_body, ekf0, jnp.arange(N_run))
     return ekf_hist
 
 
-def plot_ekf_vs_truth(logs, stateHist, ekf_hist, title_prefix="EKF IMU"):
-    """Compare EKF estimates against ground truth."""
-    t = logs["t"]
+# ── Plotting ─────────────────────────────────────────────────────────
 
-    # ── Position ──
-    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
-    for i, (ax, lbl) in enumerate(zip(axes, ["x", "y", "z"])):
-        ax.plot(t, stateHist.p_W[:, i], "k-", label=f"truth {lbl}")
-        ax.plot(t, ekf_hist.x_nom.p_W[:, i], "r--", label=f"EKF {lbl}")
-        ax.set_ylabel(f"p_{lbl} [m]")
-        ax.legend()
-    axes[-1].set_xlabel("t [s]")
+
+def _sigma_band(P_hist, idx_slice):
+    """Extract ±2σ from the covariance diagonal for a given state slice."""
+    # P_hist: (N, ERROR_DIM, ERROR_DIM)
+    diag = jax.vmap(lambda P: jnp.diag(P)[idx_slice])(P_hist)  # (N, dim)
+    return 2.0 * jnp.sqrt(jnp.maximum(diag, 0.0))
+
+
+def plot_ekf_vs_truth(
+    logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
+):
+    """
+    Compare EKF estimates against ground truth.
+    Plots both the overlay (truth vs EKF) and the error with ±2σ bounds.
+    """
+    t = logs["t"][start_idx:]
+    truth_p = stateHist.p_W[start_idx:]
+    truth_v = stateHist.v_W[start_idx:]
+    truth_w = stateHist.w_B[start_idx:]
+    truth_omega = stateHist.omega_W[start_idx:]
+
+    ekf_p = ekf_hist.x_nom.p_W
+    ekf_v = ekf_hist.x_nom.v_W
+    ekf_w = ekf_hist.x_nom.w_B
+    ekf_omega = ekf_hist.x_nom.omega_W
+
+    # ── Position: overlay + error with ±2σ ──
+    sigma_p = _sigma_band(ekf_hist.P, _P_IDX["p_W"])
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    for i, lbl in enumerate(["x", "y", "z"]):
+        # Left: overlay
+        axes[i, 0].plot(t, truth_p[:, i], "k-", label="truth")
+        axes[i, 0].plot(t, ekf_p[:, i], "r--", label="EKF")
+        axes[i, 0].set_ylabel(f"p_{lbl} [m]")
+        axes[i, 0].legend(fontsize=8)
+        # Right: error + covariance
+        err = ekf_p[:, i] - truth_p[:, i]
+        axes[i, 1].plot(t, err, "b-", linewidth=0.8)
+        axes[i, 1].fill_between(
+            t, -sigma_p[:, i], sigma_p[:, i], alpha=0.25, color="r"
+        )
+        axes[i, 1].set_ylabel(f"Δp_{lbl} [m]")
+        axes[i, 1].axhline(0, color="k", linewidth=0.3)
+    axes[-1, 0].set_xlabel("t [s]")
+    axes[-1, 1].set_xlabel("t [s]")
+    axes[0, 0].set_title("Overlay")
+    axes[0, 1].set_title("Error  ± 2σ")
     fig.suptitle(f"{title_prefix} — Position")
+    fig.tight_layout()
 
-    # ── Velocity ──
-    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
-    for i, (ax, lbl) in enumerate(zip(axes, ["vx", "vy", "vz"])):
-        ax.plot(t, stateHist.v_W[:, i], "k-", label=f"truth {lbl}")
-        ax.plot(t, ekf_hist.x_nom.v_W[:, i], "r--", label=f"EKF {lbl}")
-        ax.set_ylabel(f"{lbl} [m/s]")
-        ax.legend()
-    axes[-1].set_xlabel("t [s]")
+    # ── Velocity: overlay + error with ±2σ ──
+    sigma_v = _sigma_band(ekf_hist.P, _P_IDX["v_W"])
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    for i, lbl in enumerate(["vx", "vy", "vz"]):
+        axes[i, 0].plot(t, truth_v[:, i], "k-", label="truth")
+        axes[i, 0].plot(t, ekf_v[:, i], "r--", label="EKF")
+        axes[i, 0].set_ylabel(f"{lbl} [m/s]")
+        axes[i, 0].legend(fontsize=8)
+        err = ekf_v[:, i] - truth_v[:, i]
+        axes[i, 1].plot(t, err, "b-", linewidth=0.8)
+        axes[i, 1].fill_between(
+            t, -sigma_v[:, i], sigma_v[:, i], alpha=0.25, color="r"
+        )
+        axes[i, 1].set_ylabel(f"Δ{lbl} [m/s]")
+        axes[i, 1].axhline(0, color="k", linewidth=0.3)
+    axes[-1, 0].set_xlabel("t [s]")
+    axes[-1, 1].set_xlabel("t [s]")
+    axes[0, 0].set_title("Overlay")
+    axes[0, 1].set_title("Error  ± 2σ")
     fig.suptitle(f"{title_prefix} — Velocity (world)")
+    fig.tight_layout()
 
-    # ── Angular velocity (body) ──
-    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
-    for i, (ax, lbl) in enumerate(zip(axes, ["wx", "wy", "wz"])):
-        ax.plot(t, stateHist.w_B[:, i], "k-", label=f"truth {lbl}")
-        ax.plot(t, ekf_hist.x_nom.w_B[:, i], "r--", label=f"EKF {lbl}")
-        ax.set_ylabel(f"{lbl} [rad/s]")
-        ax.legend()
-    axes[-1].set_xlabel("t [s]")
+    # ── Angular velocity: overlay + error with ±2σ ──
+    sigma_w = _sigma_band(ekf_hist.P, _P_IDX["w_B"])
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    for i, lbl in enumerate(["wx", "wy", "wz"]):
+        axes[i, 0].plot(t, truth_w[:, i], "k-", label="truth")
+        axes[i, 0].plot(t, ekf_w[:, i], "r--", label="EKF")
+        axes[i, 0].set_ylabel(f"{lbl} [rad/s]")
+        axes[i, 0].legend(fontsize=8)
+        err = ekf_w[:, i] - truth_w[:, i]
+        axes[i, 1].plot(t, err, "b-", linewidth=0.8)
+        axes[i, 1].fill_between(
+            t, -sigma_w[:, i], sigma_w[:, i], alpha=0.25, color="r"
+        )
+        axes[i, 1].set_ylabel(f"Δ{lbl} [rad/s]")
+        axes[i, 1].axhline(0, color="k", linewidth=0.3)
+    axes[-1, 0].set_xlabel("t [s]")
+    axes[-1, 1].set_xlabel("t [s]")
+    axes[0, 0].set_title("Overlay")
+    axes[0, 1].set_title("Error  ± 2σ")
     fig.suptitle(f"{title_prefix} — Angular velocity (body)")
+    fig.tight_layout()
 
-    # ── Yaw ──
+    # ── Wheel speeds: overlay + error with ±2σ ──
+    sigma_om = _sigma_band(ekf_hist.P, _P_IDX["omega_W"])
+    fig, axes = plt.subplots(4, 2, sharex="col", figsize=(14, 10))
+    wheel_names = ["FL", "FR", "RL", "RR"]
+    for i, name in enumerate(wheel_names):
+        axes[i, 0].plot(t, truth_omega[:, i], "k-", label="truth")
+        axes[i, 0].plot(t, ekf_omega[:, i], "r--", label="EKF")
+        axes[i, 0].set_ylabel(f"ω_{name} [rad/s]")
+        axes[i, 0].legend(fontsize=8)
+        err = ekf_omega[:, i] - truth_omega[:, i]
+        axes[i, 1].plot(t, err, "b-", linewidth=0.8)
+        axes[i, 1].fill_between(
+            t, -sigma_om[:, i], sigma_om[:, i], alpha=0.25, color="r"
+        )
+        axes[i, 1].set_ylabel(f"Δω_{name} [rad/s]")
+        axes[i, 1].axhline(0, color="k", linewidth=0.3)
+    axes[-1, 0].set_xlabel("t [s]")
+    axes[-1, 1].set_xlabel("t [s]")
+    axes[0, 0].set_title("Overlay")
+    axes[0, 1].set_title("Error  ± 2σ")
+    fig.suptitle(f"{title_prefix} — Wheel speeds")
+    fig.tight_layout()
+
+    # ── Yaw: overlay + error with ±2σ ──
     yaw_true = jax.vmap(lambda q: jaxlie.SO3(q).compute_yaw_radians())(
-        stateHist.R_WB.wxyz
+        stateHist.R_WB.wxyz[start_idx:]
     )
     yaw_ekf = jax.vmap(lambda q: jaxlie.SO3(q).compute_yaw_radians())(
         ekf_hist.x_nom.R_WB.wxyz
     )
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, jnp.rad2deg(yaw_true), "k-", label="truth yaw")
-    plt.plot(t, jnp.rad2deg(yaw_ekf), "r--", label="EKF yaw")
-    plt.xlabel("t [s]")
-    plt.ylabel("yaw [deg]")
-    plt.title(f"{title_prefix} — Yaw")
-    plt.legend()
+    sigma_yaw = _sigma_band(ekf_hist.P, slice(5, 6))  # yaw is theta_z
 
-    # ── Position error norm ──
-    pos_err = jnp.linalg.norm(ekf_hist.x_nom.p_W - stateHist.p_W, axis=-1)
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, pos_err, "b-")
-    plt.xlabel("t [s]")
-    plt.ylabel("||p_ekf - p_true|| [m]")
-    plt.title(f"{title_prefix} — Position error norm")
+    fig, axes = plt.subplots(1, 2, sharex=True, figsize=(14, 4))
+    axes[0].plot(t, jnp.rad2deg(yaw_true), "k-", label="truth")
+    axes[0].plot(t, jnp.rad2deg(yaw_ekf), "r--", label="EKF")
+    axes[0].set_ylabel("yaw [deg]")
+    axes[0].set_xlabel("t [s]")
+    axes[0].legend(fontsize=8)
+    axes[0].set_title("Overlay")
+
+    yaw_err = jnp.rad2deg(yaw_ekf - yaw_true)
+    sigma_yaw_deg = jnp.rad2deg(sigma_yaw[:, 0])
+    axes[1].plot(t, yaw_err, "b-", linewidth=0.8)
+    axes[1].fill_between(
+        t, -sigma_yaw_deg, sigma_yaw_deg, alpha=0.25, color="r"
+    )
+    axes[1].set_ylabel("Δyaw [deg]")
+    axes[1].set_xlabel("t [s]")
+    axes[1].axhline(0, color="k", linewidth=0.3)
+    axes[1].set_title("Error  ± 2σ")
+    fig.suptitle(f"{title_prefix} — Yaw")
+    fig.tight_layout()
 
     plt.show()
 
@@ -349,43 +477,64 @@ def main():
         model, x0, dt, T_settle, T_straight, T_turn, v_cmd, +delta_turn
     )
 
-    # ── Generate noisy IMU measurements ──
-    R_gyro = 0.001   # gyroscope noise variance
-    R_accel = 0.01   # accelerometer noise variance
+    # Skip the settle phase: contact-model relu makes the F Jacobian
+    # unreliable during the ground-bounce transient.
+    N_settle = int(T_settle / dt)
+
+    # ── Sensor noise variances ──
+    R_gps = 1e-4       # GPS position  σ ≈ 1 cm   [m²]
+    R_gyro = 1e-4      # gyroscope     σ ≈ 0.01   [rad²/s²]
+    R_gravity = 1e-2   # accel/gravity σ ≈ 0.1    [(m/s²)²]
+    R_wheels = 1e-4    # wheel encoder σ ≈ 0.01   [rad²/s²]
+
     key = jax.random.PRNGKey(42)
 
-    z_gyro, z_accel = generate_imu_measurements(
-        model, states_out, out_L, R_gyro, R_accel, key
+    z_gps, z_gyro, z_gravity, z_wheels = generate_measurements(
+        states_out, model.params.chassis.g,
+        R_gps, R_gyro, R_gravity, R_wheels, key,
     )
 
-    print(f"Generated {z_gyro.shape[0]} IMU measurements")
-    print(f"  z_gyro  shape: {z_gyro.shape}  (R = {R_gyro})")
-    print(f"  z_accel shape: {z_accel.shape}  (R = {R_accel})")
+    N_run = z_gps.shape[0] - N_settle
+    print(f"Skipping first {N_settle} steps (settle phase)")
+    print(f"Running EKF on {N_run} steps:")
+    print(f"  GPS       σ = {jnp.sqrt(R_gps):.4f} m")
+    print(f"  Gyro      σ = {jnp.sqrt(R_gyro):.4f} rad/s")
+    print(f"  Gravity   σ = {jnp.sqrt(R_gravity):.4f} m/s²")
+    print(f"  Wheels    σ = {jnp.sqrt(R_wheels):.4f} rad/s")
 
     # ── Run the EKF ──
-    Q = 1e-4 * jnp.eye(ERROR_DIM)
-    P0 = 1e-3 * jnp.eye(ERROR_DIM)
+    Q = 1e-6 * jnp.eye(ERROR_DIM)
+    P0 = 1e-4 * jnp.eye(ERROR_DIM)
 
-    ekf_hist = run_ekf_imu(
+    ekf_hist = run_ekf(
         model=model,
         stateHist=states_out,
         logs=out_L,
+        z_gps=z_gps,
         z_gyro=z_gyro,
-        z_accel=z_accel,
+        z_gravity=z_gravity,
+        z_wheels=z_wheels,
+        R_gps_val=R_gps,
         R_gyro_val=R_gyro,
-        R_accel_val=R_accel,
+        R_gravity_val=R_gravity,
+        R_wheels_val=R_wheels,
         Q=Q,
         P0=P0,
         dt=dt,
+        start_idx=N_settle,
     )
 
-    # ── Position RMSE ──
-    pos_err = jnp.linalg.norm(ekf_hist.x_nom.p_W - states_out.p_W, axis=-1)
-    print(f"\nEKF position RMSE: {jnp.sqrt(jnp.mean(pos_err**2)):.6f} m")
-    print(f"EKF position max error: {jnp.max(pos_err):.6f} m")
+    # ── Metrics (post-settle only) ──
+    truth_p = states_out.p_W[N_settle:]
+    truth_v = states_out.v_W[N_settle:]
+    pos_err = jnp.linalg.norm(ekf_hist.x_nom.p_W - truth_p, axis=-1)
+    vel_err = jnp.linalg.norm(ekf_hist.x_nom.v_W - truth_v, axis=-1)
+    print(f"\nEKF position RMSE:  {jnp.sqrt(jnp.mean(pos_err**2)):.6f} m")
+    print(f"EKF position max:   {jnp.max(pos_err):.6f} m")
+    print(f"EKF velocity RMSE:  {jnp.sqrt(jnp.mean(vel_err**2)):.6f} m/s")
 
     # ── Plot ──
-    plot_ekf_vs_truth(out_L, states_out, ekf_hist)
+    plot_ekf_vs_truth(out_L, states_out, ekf_hist, start_idx=N_settle)
 
 
 if __name__ == "__main__":
