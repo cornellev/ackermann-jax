@@ -421,11 +421,11 @@ def default_params() -> AckermannCarParams:
 
     # choose wheel mass to be about 0.05 kg
     m_wheel = 0.05 # kg
-    fac = 2 # inertia scale factor
+    fac = 10 # inertia scale factor
     I_w = fac * 0.5 * m_wheel * geom.wheel_radius**2
     # print("Wheel inertia:", I_w)
     # we want wheels to settle within about 0.1s, so:
-    tau_spin = 2.0 # seconds #NOTE: wheel damping was too high here causing issues
+    tau_spin = 0.3 # seconds #NOTE: wheel damping was too high here causing issues
     b_w = I_w / tau_spin
     wheels = WheelParams(I_w=I_w, b_w=b_w) # these need to be dynamically determined as well
     tires = TireParams(mu=0.9, C_kappa=30.0, C_alpha=25.0,eps_v=1e-3)
