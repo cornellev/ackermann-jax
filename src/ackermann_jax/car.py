@@ -27,6 +27,18 @@ import jaxlie
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class AckermannCarState:
+    """Full rigid-body state of the Ackermann car.
+
+    All fields are JAX arrays or jaxlie types, making this a valid JAX pytree.
+
+    Attributes:
+        p_W (Array): CoM position in the world frame ``(3,)`` [m].
+        R_WB (jaxlie.SO3): Rotation from body frame to world frame.
+        v_W (Array): CoM linear velocity in the world frame ``(3,)`` [m/s].
+        w_B (Array): Chassis angular velocity in the body frame ``(3,)`` [rad/s].
+        omega_W (Array): Wheel spin rates ``(4,)`` [rad/s], ordered [FL, FR, RL, RR].
+    """
+
     p_W: Array # (3,) position of the car in world frame
     R_WB: jaxlie.SO3 # rotation from body to world frame
     v_W: Array # linear velocity of the car in world frame
@@ -51,6 +63,13 @@ class AckermannCarState:
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class AckermannCarInput:
+    """Control input to the Ackermann car.
+
+    Attributes:
+        delta (Array): Commanded steering angle [rad]. Positive is a left turn.
+        tau_w (Array): Commanded wheel torques ``(4,)`` [N·m], ordered [FL, FR, RL, RR].
+    """
+
     delta: Array
     tau_w: Array
 
@@ -67,6 +86,19 @@ class AckermannCarInput:
 
 @jax.tree_util.register_pytree_node_class
 class AckermannCarModel:
+    """Physics model for a 3-D rigid-body Ackermann car.
+
+    Uses a spring-damper contact model for normal forces, a combined-slip
+    Pacejka-style tire model for lateral and longitudinal forces, and SO(3)
+    integration for the rotation state.
+
+    Args:
+        params (AckermannCarParams): Full parameter set for the car.
+
+    Attributes:
+        params (AckermannCarParams): Stored parameter set.
+    """
+
     def __init__(self, params: AckermannCarParams):
         self.params = params
 
@@ -78,7 +110,17 @@ class AckermannCarModel:
         return cls(children[0])
 
     def xdot(self, x: AckermannCarState, u: AckermannCarInput) -> AckermannCarState:
+        """Compute the continuous-time state derivative.
 
+        Args:
+            x: Current state.
+            u: Control input.
+
+        Returns:
+            State derivative. The ``R_WB`` field carries a placeholder
+            :class:`jaxlie.SO3` identity; the actual rotation rate is handled
+            implicitly by the integrator via ``w_B``.
+        """
         p = self.params
 
         p_W = x.p_W
@@ -149,6 +191,18 @@ class AckermannCarModel:
         dt: float,
         method: Literal["semi_implicit_euler","euler"] = "semi_implicit_euler"
     ) -> AckermannCarState:
+        """Integrate the dynamics forward by one timestep.
+
+        Args:
+            x: Current state.
+            u: Control input.
+            dt: Timestep [s].
+            method: Integration scheme. ``"semi_implicit_euler"`` (default)
+                improves energy conservation; ``"euler"`` uses explicit Euler.
+
+        Returns:
+            State at time ``t + dt``.
+        """
         if method == "euler":
             xdot = self.xdot(x,u)
             return self._integrate_euler(x,xdot,dt)
@@ -169,6 +223,28 @@ class AckermannCarModel:
         integ_max: float = 10.0,
         use_traction_limit: bool = True
     ):
+        """PI velocity controller that maps a desired longitudinal speed to wheel torques.
+
+        Computes a PI control law on the body-frame longitudinal speed error and
+        distributes the commanded force to driven wheels. Optionally clamps each
+        wheel's force to the traction limit ``mu * Fz``.
+
+        Args:
+            x: Current car state.
+            v_cmd: Desired longitudinal speed in the body frame [m/s].
+            integral_state: Running integral of speed error (carry between steps).
+            dt: Timestep [s].
+            Kp: Proportional gain.
+            Ki: Integral gain.
+            tau_max: Torque saturation limit per wheel [N·m].
+            integ_max: Anti-windup clamp on the integral state.
+            use_traction_limit: If ``True``, clamp per-wheel force to ``mu * Fz``.
+
+        Returns:
+            Tuple ``(tau_w, integ_next)``:
+                - ``tau_w``: Wheel torques ``(4,)`` [N·m].
+                - ``integ_next``: Updated integral state.
+        """
         p = self.params
         R = x.R_WB.as_matrix()
 
@@ -221,30 +297,30 @@ class AckermannCarModel:
         delta_max: float = 0.35,
         integ_max: float = 0.5,
     ) -> Tuple[Array, Array]:
-        """
-        PID controller that maps a desired heading to a steering angle delta.
+        """PID heading controller that maps a desired yaw angle to a steering angle.
 
-        Analogous to map_velocity_to_wheel_torques for the motor.
-
-        Parameters:
-            psi_cmd:        desired heading angle [rad], world frame
-            integral_state: scalar integral of heading error (carry between steps)
-            Kp, Ki, Kd:     PID gains
-            delta_max:      saturation limit on steering angle [rad]
-            integ_max:      anti-windup clamp on integral [rad·s]
+        Args:
+            x: Current car state.
+            psi_cmd: Desired heading angle [rad] in the world frame.
+            integral_state: Scalar integral of heading error (carry between steps).
+            dt: Timestep [s].
+            Kp: Proportional gain.
+            Ki: Integral gain.
+            Kd: Derivative gain (damps yaw rate).
+            delta_max: Steering angle saturation limit [rad].
+            integ_max: Anti-windup clamp on the integral [rad·s].
 
         Returns:
-            delta:      steering angle command [rad]
-            integ_next: updated integral state
+            Tuple ``(delta, integ_next)``:
+                - ``delta``: Steering angle command [rad].
+                - ``integ_next``: Updated integral state.
 
-        Pole placement (linearised about v, L):
-            Plant:  ψ̇ = (v/L)·δ  →  G(s) = a/s,  a = v/L
-            Closed-loop char. poly:
-                (1 + a·Kd)·s² + a·Kp·s + a·Ki = 0
-                ωn  = sqrt(a·Ki / (1 + a·Kd))
-                ζ   = a·Kp / (2·sqrt(a·Ki·(1 + a·Kd)))
-            Default gains target ζ≈1.3, poles at s≈{-0.81, -3.74} at v=1 m/s, L=0.26 m.
-            Both poles are real (overdamped) → no oscillation.
+        Note:
+            Pole placement (linearised at speed ``v``, wheelbase ``L``):
+            plant ``ψ̇ = (v/L)·δ``, closed-loop char. poly
+            ``(1 + a·Kd)·s² + a·Kp·s + a·Ki = 0``.
+            Default gains target ζ ≈ 1.3 at v = 1 m/s, L = 0.26 m
+            (overdamped, no oscillation).
         """
         R = x.R_WB.as_matrix()
         yaw = jnp.arctan2(R[1, 0], R[0, 0])
@@ -267,6 +343,15 @@ class AckermannCarModel:
         return delta, integ_next
 
     def _normal_forces(self, p_i_W: Array, v_i_W: Array) -> Array:
+        """Compute normal ground-reaction forces at each wheel contact point.
+
+        Args:
+            p_i_W: Wheel contact positions in the world frame ``(4, 3)``.
+            v_i_W: Wheel contact velocities in the world frame ``(4, 3)``.
+
+        Returns:
+            Non-negative normal forces ``(4,)`` [N].
+        """
         k_n = self.params.contact.k_n
         c_n = self.params.contact.c_n
         z0 = self.params.contact.z0
@@ -280,17 +365,17 @@ class AckermannCarModel:
         return jnp.maximum(0.0, Fz)
 
     def _slip(self, omega_w: Array, v_t: Array, v_n: Array) -> Tuple[Array, Array]:
-        """
-        Wheel slip function
+        """Compute longitudinal slip ratio and slip angle for each wheel.
 
-        Parameters:
-        omega_w: (4,) angular velocity of the wheels in wheel frame
-        v_t: (4,) tangential velocity of the wheel contact patch in the direction of the wheel plane
-        v_n: (4,) normal velocity of the wheel contact patch
+        Args:
+            omega_w: Wheel spin rates ``(4,)`` [rad/s].
+            v_t: Tangential contact-patch speed along the wheel plane ``(4,)`` [m/s].
+            v_n: Lateral contact-patch speed ``(4,)`` [m/s].
 
         Returns:
-        kappa: (4,) longitudinal slip ratio
-        alpha: (4,) slip angle
+            Tuple ``(kappa, alpha)``:
+                - ``kappa``: Longitudinal slip ratios ``(4,)``.
+                - ``alpha``: Slip angles ``(4,)`` [rad].
         """
         kappa_max = 2.0
         rw = self.params.geom.wheel_radius
@@ -304,6 +389,19 @@ class AckermannCarModel:
         return kappa, alpha
 
     def _tire_forces(self, kappa: Array, alpha: Array, Fz: Array) -> Tuple[Array,Array]:
+        """Compute combined-slip longitudinal and lateral tire forces.
+
+        Applies an elliptic friction-circle saturation:
+        ``scale = min(1, Fmax / ||[Fx*, Fy*]||)``.
+
+        Args:
+            kappa: Longitudinal slip ratios ``(4,)``.
+            alpha: Slip angles ``(4,)`` [rad].
+            Fz: Normal forces ``(4,)`` [N].
+
+        Returns:
+            Tuple ``(Fx, Fy)`` of longitudinal and lateral forces ``(4,)`` [N].
+        """
         tp = self.params.tires
         Fx_star = tp.C_kappa * kappa
         Fy_star = -tp.C_alpha * alpha
@@ -318,6 +416,16 @@ class AckermannCarModel:
         return Fx, Fy
 
     def _integrate_euler(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
+        """Explicit Euler integration step.
+
+        Args:
+            x: Current state.
+            xdot: State derivative.
+            dt: Timestep [s].
+
+        Returns:
+            Next state.
+        """
         p_W_next = x.p_W + dt * xdot.p_W
         v_W_next = x.v_W + dt * xdot.v_W
         w_B_next = x.w_B + dt * xdot.w_B
@@ -335,6 +443,20 @@ class AckermannCarModel:
         )
 
     def _integrate_semi_implicit(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
+        """Semi-implicit (symplectic) Euler integration step.
+
+        Velocities and angular rates are updated first, then used to advance
+        position and rotation. Gives better energy conservation than explicit
+        Euler at the same computational cost.
+
+        Args:
+            x: Current state.
+            xdot: State derivative.
+            dt: Timestep [s].
+
+        Returns:
+            Next state.
+        """
         v_W_next = x.v_W + dt * xdot.v_W
         w_B_next = x.w_B + dt * xdot.w_B
         omega_w_next = x.omega_W + dt * xdot.omega_W
@@ -355,6 +477,19 @@ class AckermannCarModel:
         x: AckermannCarState,
         u: AckermannCarInput
     ) -> Diagnostics:
+        """Compute detailed per-wheel diagnostic quantities.
+
+        Useful for debugging tire forces, slip, and contact model behaviour
+        without re-running the full dynamics.
+
+        Args:
+            x: Current car state.
+            u: Control input.
+
+        Returns:
+            :class:`~ackermann_jax.parameters.Diagnostics` containing forces,
+            slip, and contact quantities for all four wheels.
+        """
         p = self.params
         p_W, R_WB, v_W, w_B, omega_w = x.p_W, x.R_WB, x.v_W, x.w_B, x.omega_W
         R = R_WB.as_matrix()
@@ -412,6 +547,12 @@ class AckermannCarModel:
 # ---
 
 def default_params() -> AckermannCarParams:
+    """Construct default parameters for a 1/10-scale RWD RC car.
+
+    Returns:
+        :class:`~ackermann_jax.parameters.AckermannCarParams` representative of a
+        lightweight rear-wheel-drive Ackermann car (mass ≈ 1.5 kg, wheelbase ≈ 260 mm).
+    """
     geom = AckermannGeometry(
         L=0.26,
         W=0.16,
@@ -452,6 +593,14 @@ def default_params() -> AckermannCarParams:
     )
 
 def default_state(z0: float = 0.08) -> AckermannCarState:
+    """Construct a zero-velocity initial state at the world origin.
+
+    Args:
+        z0: Initial CoM height above the ground plane [m].
+
+    Returns:
+        :class:`AckermannCarState` at rest with identity orientation at the origin.
+    """
     p_W = jnp.array([0.0, 0.0, z0], dtype=jnp.float32)
     R_WB = jaxlie.SO3.identity()
     v_W = jnp.zeros((3,), dtype=jnp.float32)
@@ -467,6 +616,15 @@ def default_state(z0: float = 0.08) -> AckermannCarState:
     )
 
 def pack_input(delta: float, tau_w: Array) -> AckermannCarInput:
+    """Construct an :class:`AckermannCarInput` from scalar and array values.
+
+    Args:
+        delta: Steering angle [rad].
+        tau_w: Wheel torques ``(4,)`` [N·m].
+
+    Returns:
+        :class:`AckermannCarInput` with float32 arrays.
+    """
     return AckermannCarInput(
         delta = jnp.array(delta, dtype=jnp.float32),
         tau_w=tau_w.astype(jnp.float32)

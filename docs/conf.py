@@ -16,16 +16,15 @@ extensions = [
 
 autodoc_default_options = {
     "members": True,
-    "undoc-members": True,
     "show-inheritance": True,
 }
-autodoc_typehints = "description"
+autodoc_typehints = "signature"
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
-    "jax": ("https://jax.readthedocs.io/en/latest/", None),
+    "jax": ("https://docs.jax.dev/en/latest/", None),
 }
 
 html_theme = "pydata_sphinx_theme"
