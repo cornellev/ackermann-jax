@@ -33,6 +33,7 @@ platforms = ["linux-64","osx-arm64","osx-64"]
 [tool.pixi.environments]
 default = {features = ["cpu"]}
 gpu = {features = ["gpu"]}
+docs = {features = ["docs"]}
 
 
 [tool.pixi.dependencies]
@@ -53,5 +54,9 @@ system-requirements = { cuda = "12"}
 [tool.pixi.feature.gpu.dependencies]
 cuda-version = "12.*"
 jaxlib = {version = "*", build = "*cuda*"}
+
+[tool.pixi.feature.docs.dependencies]
+sphinx = ">=7"
+pydata-sphinx-theme = ">=0.15"
 
 [tool.pixi.feature.cpu.dependencies]
