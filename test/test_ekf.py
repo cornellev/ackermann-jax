@@ -200,6 +200,29 @@ def make_h_gravity(g: float):
     return h_gravity
 
 
+def make_h_imu(g: float):
+    """
+    Combined IMU measurement: gyroscope + accelerometer (gravity component).
+
+    Returns a 6-vector:
+        [w_B (3),  R_BW @ [0, 0, g] (3)]
+
+    The accelerometer component models only the static gravity projection into
+    the body frame — i.e. it is equivalent to make_h_gravity but stacked with
+    the gyro reading.  This lets the EKF do a single 6D update instead of two
+    separate 3D updates, which can be more efficient and avoids re-linearising
+    the state twice.
+    """
+    g_up_W = jnp.array([0.0, 0.0, g], dtype=jnp.float32)
+
+    def h_imu(x: AckermannCarState) -> Array:
+        R_BW = x.R_WB.as_matrix().T
+        accel = R_BW @ g_up_W  # gravity in body frame  (3,)
+        return jnp.concatenate([x.w_B, accel])  # (6,)
+
+    return h_imu
+
+
 def generate_measurements(
     stateHist,
     g: float,
@@ -248,8 +271,7 @@ def run_ekf(
     stateHist,
     logs,
     z_gps,
-    z_gyro,
-    z_gravity,
+    z_imu,
     z_wheels,
     R_gps_val: float,
     R_gyro_val: float,
@@ -263,7 +285,10 @@ def run_ekf(
     """
     Run the EKF with sequential measurement updates.
 
-    Per step:  predict → GPS → gyro → gravity → wheel encoders
+    Per step:  predict → GPS → IMU (gyro + gravity) → wheel encoders
+
+    z_imu should be a (..., 6) array with gyro (0:3) and gravity (3:6)
+    concatenated, matching the output of make_h_imu.
 
     Args:
         start_idx: Index into stateHist / measurements to initialise from.
@@ -275,16 +300,17 @@ def run_ekf(
     tau_w_hist = logs["tau_w"][start_idx:]
 
     z_gps_run = z_gps[start_idx:]
-    z_gyro_run = z_gyro[start_idx:]
-    z_gravity_run = z_gravity[start_idx:]
+    z_imu_run = z_imu[start_idx:]
     z_wheels_run = z_wheels[start_idx:]
 
     R_gps_mat = R_gps_val * jnp.eye(3)
-    R_gyro_mat = R_gyro_val * jnp.eye(3)
-    R_gravity_mat = R_gravity_val * jnp.eye(3)
+    R_imu_mat = jax.scipy.linalg.block_diag(
+        R_gyro_val * jnp.eye(3),
+        R_gravity_val * jnp.eye(3),
+    )
     R_wheels_mat = R_wheels_val * jnp.eye(4)
 
-    h_gravity = make_h_gravity(model.params.chassis.g)
+    h_imu = make_h_imu(model.params.chassis.g)
 
     x0 = jax.tree.map(lambda a: a[start_idx], stateHist)
     ekf0 = EKFState(x_nom=x0, P=P0)
@@ -294,8 +320,7 @@ def run_ekf(
 
         ekf = ekf_predict(model, ekf, u, Q, dt)
         ekf = ekf_update(ekf, z_gps_run[k], h_gps, R_gps_mat)
-        ekf = ekf_update(ekf, z_gyro_run[k], h_gyro, R_gyro_mat)
-        ekf = ekf_update(ekf, z_gravity_run[k], h_gravity, R_gravity_mat)
+        ekf = ekf_update(ekf, z_imu_run[k], h_imu, R_imu_mat)
         ekf = ekf_update(ekf, z_wheels_run[k], h_wheels, R_wheels_mat)
 
         return ekf, ekf
@@ -531,12 +556,15 @@ def main():
         R_gps, R_gyro, R_gravity, R_wheels, key,
     )
 
+    # Combine gyro + gravity into a single 6D IMU measurement array
+    z_imu = jnp.concatenate([z_gyro, z_gravity], axis=-1)
+
     N_run = z_gps.shape[0] - N_settle
     print(f"Skipping first {N_settle} steps (settle phase)")
     print(f"Running EKF on {N_run} steps:")
     print(f"  GPS       σ = {jnp.sqrt(R_gps):.4f} m")
-    print(f"  Gyro      σ = {jnp.sqrt(R_gyro):.4f} rad/s")
-    print(f"  Gravity   σ = {jnp.sqrt(R_gravity):.4f} m/s²")
+    print(f"  IMU gyro  σ = {jnp.sqrt(R_gyro):.4f} rad/s")
+    print(f"  IMU accel σ = {jnp.sqrt(R_gravity):.4f} m/s²")
     print(f"  Wheels    σ = {jnp.sqrt(R_wheels):.4f} rad/s")
 
     # ── Run the EKF ──
@@ -548,8 +576,7 @@ def main():
         stateHist=states_out,
         logs=out_L,
         z_gps=z_gps,
-        z_gyro=z_gyro,
-        z_gravity=z_gravity,
+        z_imu=z_imu,
         z_wheels=z_wheels,
         R_gps_val=R_gps,
         R_gyro_val=R_gyro,
