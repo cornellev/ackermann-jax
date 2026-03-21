@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable
 
 import jax
@@ -74,6 +75,7 @@ def compute_H(
     return jax.jacobian(h_error)(dx0)
 
 # Prediction and stuff
+@jax.jit
 def ekf_predict(
     model: AckermannCarModel,
     ekf: EKFState,
@@ -90,6 +92,7 @@ def ekf_predict(
     P_next = F @ ekf.P @ F.T + Q
     return EKFState(x_next, P_next)
 
+@partial(jax.jit, static_argnames=('h',))
 def ekf_update(
     ekf: EKFState,
     z: Array,

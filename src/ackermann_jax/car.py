@@ -65,9 +65,17 @@ class AckermannCarInput:
 
 # Model
 
+@jax.tree_util.register_pytree_node_class
 class AckermannCarModel:
     def __init__(self, params: AckermannCarParams):
         self.params = params
+
+    def tree_flatten(self):
+        return (self.params,), None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return cls(children[0])
 
     def xdot(self, x: AckermannCarState, u: AckermannCarInput) -> AckermannCarState:
 

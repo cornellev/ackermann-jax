@@ -1,3 +1,5 @@
+import time
+
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -543,7 +545,7 @@ def main():
     Q = 1e-6 * jnp.eye(ERROR_DIM)
     P0 = 1e-4 * jnp.eye(ERROR_DIM)
 
-    ekf_hist = run_ekf(
+    ekf_kwargs = dict(
         model=model,
         stateHist=states_out,
         logs=out_L,
@@ -560,6 +562,22 @@ def main():
         dt=dt,
         start_idx=N_settle,
     )
+
+    # First call: JIT compilation + execution
+    t0 = time.perf_counter()
+    ekf_hist = run_ekf(**ekf_kwargs)
+    jax.block_until_ready(ekf_hist)
+    t_compile = time.perf_counter() - t0
+
+    # Second call: execution only (JIT cache warm)
+    t0 = time.perf_counter()
+    ekf_hist = run_ekf(**ekf_kwargs)
+    jax.block_until_ready(ekf_hist)
+    t_run = time.perf_counter() - t0
+
+    print(f"\nTiming over {N_run} EKF steps:")
+    print(f"  1st call (compile + run): {t_compile * 1e3:.1f} ms")
+    print(f"  2nd call (run only):      {t_run * 1e3:.1f} ms  ({t_run / N_run * 1e6:.2f} µs/step)")
 
     # ── Metrics (post-settle only) ──
     truth_p = states_out.p_W[N_settle:]
