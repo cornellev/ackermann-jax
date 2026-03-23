@@ -7,6 +7,7 @@ ackermann-jax
    :maxdepth: 2
    :caption: Contents
 
+   ekf_theory
    api/index
 
 Indices and tables
