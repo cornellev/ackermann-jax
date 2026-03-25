@@ -521,12 +521,12 @@ def main():
     N_settle = int(T_settle / dt)
 
     # ── Sensor noise variances ──
-    R_gps = 1e-4       # GPS position  σ ≈ 1 cm   [m²]
-    R_gyro = 1e-4      # gyroscope     σ ≈ 0.01   [rad²/s²]
+    R_gps = 2.5       # GPS position  σ ≈ 1 cm   [m²]
+    R_gyro = 1e-2      # gyroscope     σ ≈ 0.01   [rad²/s²]
     R_gravity = 1e-2   # accel/gravity σ ≈ 0.1    [(m/s²)²]
     R_wheels = 1e-4    # wheel encoder σ ≈ 0.01   [rad²/s²]
 
-    key = jax.random.PRNGKey(42)
+    key = jax.random.PRNGKey(69)
 
     z_gps, z_gyro, z_gravity, z_wheels = generate_measurements(
         states_out, model.params.chassis.g,
