@@ -8,6 +8,7 @@
    :caption: Contents
 
    ekf_theory
+   physics_theory
    api/index
    doc_stuff
 
