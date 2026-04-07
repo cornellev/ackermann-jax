@@ -521,10 +521,10 @@ def main():
     N_settle = int(T_settle / dt)
 
     # ── Sensor noise variances ──
-    R_gps = 1e-4       # GPS position  σ ≈ 1 cm   [m²]
-    R_gyro = 1e-4      # gyroscope     σ ≈ 0.01   [rad²/s²]
-    R_gravity = 1e-2   # accel/gravity σ ≈ 0.1    [(m/s²)²]
-    R_wheels = 1e-4    # wheel encoder σ ≈ 0.01   [rad²/s²]
+    R_gps = 2.25       # GPS position  σ ≈ 1.5    [m]
+    R_gyro = 1e-4      # gyroscope     σ ≈ 0.01   [rad/s]
+    R_gravity = 1e-2   # accel/gravity σ ≈ 0.1    [m/s²]
+    R_wheels = 1e-4    # wheel encoder σ ≈ 0.01   [rad/s]
 
     key = jax.random.PRNGKey(42)
 
