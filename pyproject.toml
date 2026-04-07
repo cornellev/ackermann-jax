@@ -58,5 +58,9 @@ jaxlib = {version = "*", build = "*cuda*"}
 [tool.pixi.feature.docs.dependencies]
 sphinx = ">=7"
 pydata-sphinx-theme = ">=0.15"
+sphinx-autobuild = ">=2024"
+
+[tool.pixi.feature.docs.tasks]
+docs-live = "sphinx-autobuild docs docs/_build/html --watch src"
 
 [tool.pixi.feature.cpu.dependencies]

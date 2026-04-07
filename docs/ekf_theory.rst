@@ -133,7 +133,7 @@ Given control input :math:`u` and timestep :math:`dt`, the predict step
    and :math:`f_\delta` is the error-state dynamics function
    :func:`~ackermann_jax.errorDyn.error_dynamics`.
 
-   :math:`Q \in \mathbb{R}^{16 \times 16}` is the process-noise covariance.
+   :math:`Q \in \mathbb{R}^{16 \times 16}` is the process-noise covariance matrix.
 
 Update Step
 -----------
@@ -186,8 +186,8 @@ When a measurement :math:`z \in \mathbb{R}^m` arrives, the update step
 Sensor Models
 -------------
 
-The filter supports multiple measurement sources, each defined by a
-measurement function :math:`h : \mathcal{X} \to \mathbb{R}^m`.
+.. The filter supports multiple measurement sources, each defined by a
+.. measurement function :math:`h : \mathcal{X} \to \mathbb{R}^m`.
 
 GPS (2-D position)
 ~~~~~~~~~~~~~~~~~~
@@ -196,9 +196,9 @@ GPS (2-D position)
 
    h_{\mathrm{GPS}}(x) = p_W[0:2]
 
-Returns the :math:`x`-:math:`y` components of the world-frame position.
-Latitude/longitude readings are converted to local Cartesian coordinates
-before being passed as :math:`z`.
+Returns the :math:`x`-:math:`y` components of latitude
+and longitude, while :math:`z` is currently assumed to be the height of the vehicle,
+and differentiations in height can be achieved by passing in a different measurement.
 
 Wheel Encoders
 ~~~~~~~~~~~~~~
@@ -208,7 +208,7 @@ Wheel Encoders
    h_{\mathrm{wheels}}(x) = \Omega_W
 
 Returns all four wheel angular velocities.  RPM readings from the encoders
-are converted to rad/s before use.
+are converted to :math:`\mathrm{rad/s}` before use.
 
 Multi-Sensor Fusion
 ~~~~~~~~~~~~~~~~~~~
@@ -221,6 +221,9 @@ once and then chain :func:`~ackermann_jax.ekf.ekf_update` for each source::
    ekf = ekf_update(ekf, z_wheels, h_wheels, R_wheels)
 
 Each sequential update conditions on the result of the previous one.
+
+.. note::
+   In the future, these update steps should be merged into a *single* update for computational efficiency.
 
 JAX Integration
 ---------------

@@ -1,5 +1,6 @@
 import sys
 import os
+from docutils import nodes
 
 sys.path.insert(0, os.path.abspath("../src"))
 
@@ -36,3 +37,14 @@ html_theme_options = {
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build"]
+
+def code_role_with_link(name, rawtext, text, lineno, inliner, options={}, content=[]):
+    # parse display text <url>" syntax
+    import re
+    match = re.match(r'(.+?)\s*<(.+?)>', text)
+    display, url = match.group(1), match.group(2)
+    node = nodes.reference(rawtext, '', nodes.literal(display,display), refuri=url, **options)
+    return [node], []
+
+def setup(app):
+    app.add_role('code-link', code_role_with_link)
