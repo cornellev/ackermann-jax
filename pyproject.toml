@@ -11,9 +11,8 @@ dependencies = [
   "jax",
   "jaxlie",
   "ipython",
-  "jaxsim", 
-  "addcopyfighandler>=3.2.4,<4", 
-  "pyqt5>=5.15.11,<6"
+  "jaxsim",
+  "addcopyfighandler>=3.2.4,<4"
 ]
 
 [build-system]
@@ -42,6 +41,7 @@ jaxsim = "*"
 ipython = ">=9.10.0,<10"
 black = ">=26.1.0,<27"
 ruff = ">=0.15.2,<0.16"
+pyqt = ">=5.15.11,<6"
 
 [tool.pixi.pypi-dependencies]
 ackermann-jax = {path = "./", editable = true}
