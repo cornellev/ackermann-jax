@@ -28,7 +28,7 @@ where = ["src"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64","osx-arm64","osx-64"]
+platforms = ["linux-64","osx-arm64","osx-64","linux-aarch64"]
 
 [tool.pixi.environments]
 default = {features = ["cpu"]}
@@ -47,7 +47,7 @@ ruff = ">=0.15.2,<0.16"
 ackermann-jax = {path = "./", editable = true}
 
 [tool.pixi.feature.gpu]
-platforms = ["linux-64"]
+platforms = ["linux-64","linux-aarch64"]
 system-requirements = { cuda = "12"}
 
 [tool.pixi.feature.gpu.dependencies]
