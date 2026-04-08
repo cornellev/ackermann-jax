@@ -35,7 +35,6 @@ gpu = {features = ["gpu"]}
 
 
 [tool.pixi.dependencies]
-jax = "*"
 jaxlie = "*"
 jaxsim = "*"
 ipython = ">=9.10.0,<10"
@@ -57,3 +56,4 @@ cuda-version = "12.6.*"
 jax = {version = "*", extras = ["cuda12"]}
 
 [tool.pixi.feature.cpu.dependencies]
+jax = "*"
