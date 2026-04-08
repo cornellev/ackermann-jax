@@ -69,6 +69,13 @@ Similarly, the car control variable :math:`\mathbf{u}` is an
 Modeling of Main System
 -----------------------
 
+With the frmae conventions above, we first extract all components
+from the state and control variables. Then, we assemble the body frame vectors, via the following code::
+
+  t_B = jnp.stack([jnp.cos(delta), jnp.sin(delta), 0.0])
+  n_B = jnp.stack([-jnp.sin(delta), jnp.cos(delta), 0.0])
+
+
 Smaller Physical Models
 -----------------------
 
