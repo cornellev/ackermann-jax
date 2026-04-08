@@ -52,6 +52,8 @@ system-requirements = { cuda = "12.6"}
 
 [tool.pixi.feature.gpu.dependencies]
 cuda-version = "12.6.*"
-jaxlib = {version = "*", build = "*cuda*"}
+
+[tool.pixi.feature.gpu.pypi-dependencies]
+jax = {version = "*", extras = ["cuda12"]}
 
 [tool.pixi.feature.cpu.dependencies]
