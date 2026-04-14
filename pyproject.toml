@@ -4,7 +4,8 @@ version = "0.0.1"
 requires-python = ">= 3.11"
 description = "3D Rigid Body Ackermann Car Physics in JAX"
 authors= [
-  { name = "Lucas Libshutz", email = "lsl94@cornell.edu"}
+  { name = "Lucas Libshutz", email = "lsl94@cornell.edu"},
+  { name = "Smriti Kumar", email = "sk3452@cornell.edu"}
 ]
 
 dependencies = [
