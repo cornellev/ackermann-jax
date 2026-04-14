@@ -1,3 +1,27 @@
+"""
+Real-time EKF prediction and update loop.
+ 
+Reads sensor data from the sensor shared-memory block, runs one EKF
+predict-update cycle per iteration, and publishes the estimated vehicle
+state to the Kalman shared-memory block.
+ 
+Sensor to EKF mapping
+---------------------
+.. code-block:: text
+ 
+    Sensor field          SHM index   EKF usage
+    --------------------  ---------   ----------------------------
+    steering turn angle   d[6]        u.delta  [rad]
+    throttle              d[18]       u.tau_w  (scaled by _TAU_MAX, RWD mask)
+    GPS latitude          d[14]       z_gps x  [m, local ENU]
+    GPS longitude         d[15]       z_gps y  [m, local ENU]
+    RPM front-left        d[8]        omega_W[0] [rad/s]
+    RPM front-right       d[9]        omega_W[1] [rad/s]
+    RPM rear-left         d[11]       omega_W[2] [rad/s]
+    RPM rear-right        d[12]       omega_W[3] [rad/s]
+ 
+"""
+
 import math
 import time
 import jax.numpy as jnp
@@ -13,23 +37,26 @@ from ackermann_jax.car import (
     default_state,
 )
 
+# indexes for easy access
 _IDX_GLOBAL_TS = 0
-_IDX_TURN_ANGLE = 6  # steering turn_angle  [rad]
-_IDX_RPM_FL = 8  # front-left  RPM
+_IDX_TURN_ANGLE = 6  # steering turn_angle
+_IDX_RPM_FL = 8  # front-left RPM
 _IDX_RPM_FR = 9  # front-right RPM
-_IDX_RPM_RL = 11  # rear-left   RPM
-_IDX_RPM_RR = 12  # rear-right  RPM
+_IDX_RPM_RL = 11  # rear-left RPM
+_IDX_RPM_RR = 12  # rear-right RPM
 _IDX_GPS_LAT = 14
 _IDX_GPS_LON = 15
-_IDX_THROTTLE = 18  # motor throttle  [0 … 1]
+_IDX_THROTTLE = 18  # motor throttle
+
+# useful constants
 _RPM_TO_RADS = 2.0 * math.pi / 60.0
-_R_EARTH = 6_371_000.0  # [m]
-_R_GPS_VAL = 1e-4  # GPS position noise variance         [m²]
-_R_WHEELS_VAL = 1e-4  # wheel encoder noise variance        [(rad/s)²]
+_R_EARTH = 6_371_000.0 
+_R_GPS_VAL = 1e-4  # GPS position noise variance
+_R_WHEELS_VAL = 1e-4  # wheel encoder noise variance
 _Q_SCALE = 1e-6  # process-noise scale
 _P0_SCALE = 1e-4  # initial covariance scale
-_TAU_MAX = 0.35  # peak wheel torque [N·m]  (matches test_ekf defaults)
-_DT_DEFAULT = 0.01  # nominal step [s]; also used when timestamps are stale
+_TAU_MAX = 0.35  # peak wheel torque
+_DT_DEFAULT = 0.01  # nominal step, also used when timestamps are stale
 _DT_MAX = 1.0  # cap: larger gaps are treated as a re-init guard
 
 
@@ -50,6 +77,12 @@ def _latlon_to_local_xy(lat, lon, lat0, lon0):
 
 
 def main() -> None:
+    """
+    Run the real-time EKF loop. Each iteration reads the sensor SHM,
+    runs predict, updates state parameters, and publishes the result
+    to the Kalman SHM. The loop runs until interrupted, at which point 
+    the sensor reader and Kalman writer are closed cleanly.
+    """
     params = default_params()
     model = AckermannCarModel(params)
 
