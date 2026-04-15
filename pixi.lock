@@ -2426,7 +2426,7 @@ packages:
 - pypi: ./
   name: ackermann-jax
   version: 0.0.1
-  sha256: d601b6893e30e89a0acd52ec4d75e242e91d3111027195b00253803a301ebca5
+  sha256: bd6992332b1811bd908fe48a5f49320d25cfa0b95c6a63342f4e78df4f87ee6d
   requires_dist:
   - jax
   - jaxlie
