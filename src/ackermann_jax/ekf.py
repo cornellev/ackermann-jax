@@ -115,13 +115,19 @@ def ekf_update(
 
     # compute innovation of EKF
     S = H @ ekf.P @ H.T + R
-    K = ekf.P @ H.T @ jnp.linalg.inv(S)
+    # get inverse of S via cholesky factorization for speed
+    c, low = jax.scipy.linalg.cho_factor(S)
+    I = jnp.eye(jnp.shape(S)[0]) #noqa
+    s_inv = jax.scipy.linalg.cho_solve((c, low), I)
+    
+    # K = ekf.P @ H.T @ jnp.linalg.inv(S)
+    K = ekf.P @ H.T @ s_inv
 
     innovation = z - h(ekf.x_nom)
     dx_vex = K @ innovation
 
     x_cor = inject_error(ekf.x_nom, unpack_error_state(dx_vex))
-    
+ 
     # Joseph form of covariance update
     I_KH = jnp.eye(ERROR_DIM) - K @ H
     P_cor = I_KH @ ekf.P @ I_KH.T + K @ R @ K.T
