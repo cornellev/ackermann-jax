@@ -126,7 +126,7 @@ def test_state_jacobian_shape_and_finiteness():
         f"F contains non-finite values:\n{F}"
 
     print(f"\nF shape: {F.shape}  (PASS)")
-    print(f"F =\n{np.array(F)}")
+    print(f"F = {np.array2string(np.array(F), precision=4, suppress_small=True)}  (PASS) ")
 
 
 def test_state_jacobian_near_identity():

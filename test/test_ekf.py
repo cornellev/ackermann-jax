@@ -17,6 +17,9 @@ from ackermann_jax import (
 
 from ackermann_jax.ekf import EKFState, ekf_predict, ekf_update, ERROR_DIM
 
+jax.config.update("jax_enable_x64", False)
+# jax.config.update("jax_log_compiles", True)  # Print out compiled HLO for debugging
+
 
 # Error-state index slices (must match pack/unpack_error_state ordering)
 _P_IDX = {
