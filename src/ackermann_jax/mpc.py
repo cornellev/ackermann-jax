@@ -9,21 +9,19 @@ n_iter = 100 # num of gradient descent iterations
 lr = 0.001 # learning rate for gradient descent
 u_dim = 5  # [delta, tau_w_fl, tau_w_fr, tau_w_rl, tau_w_rr] - based on AckermannCarInput
 
-u_min = jnp.array([0, 0, 0, 0, 0]) # min steering, throttle - incorrect values for now
+u_min = jnp.array([-180, -1.0, -1.0, -1.0, -1.0]) # min steering, throttle - incorrect values for now
 u_max = jnp.array([180, 1.0, 1.0, 1.0, 1.0]) # max steering, throttle - incorrect values for now
 
 Q = 0.01 * jnp.eye(ERROR_DIM) # penalise state tracking error
 R = 0.01 * jnp.eye(u_dim) # penalise control effort
 P = 0.1 * jnp.eye(ERROR_DIM) # terminal cost weight
 
-def scan_func(carry, u_flat): # to be used in rollout
-    x, model = carry
-    x_next = model.step(x, AckermannCarInput(delta=u_flat[0], tau_w=u_flat[1:]), dt)
-    return (x_next, model), x_next
-
 def rollout(model, x0, u): # n future ackermann states
-    (_, _), x_traj = jax.lax.scan(scan_func, (x0, model), u)
-    return x_traj
+   def scan_func(carry, u_flat):
+       x_next = model.step(carry, AckermannCarInput(delta=u_flat[0], tau_w=u_flat[1:]), dt)
+       return x_next, x_next
+   _, x_traj = jax.lax.scan(scan_func, x0, u)
+   return x_traj
 
 def state_error(x_pred, x_ref): # need this to calculate error because of different subcomponents in state
     dp = x_pred.p_W - x_ref.p_W
