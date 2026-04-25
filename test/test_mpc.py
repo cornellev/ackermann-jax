@@ -305,14 +305,13 @@ def plot_mpc_results(
     psi_cmd_seg = ref_logs["psi_cmd"][start_idx : start_idx + n_steps]
 
     # ── 1. XY trajectory ─────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(10, 10))
     ax.plot(ref_p[:, 0],  ref_p[:, 1],  "k--",  linewidth=1.0, label="reference")
     ax.plot(true_p[:, 0], true_p[:, 1], "b-",   linewidth=1.5, label="MPC (true)")
     ax.scatter(ref_p[0, 0],  ref_p[0, 1],  c="green",  s=60, zorder=5, label="start")
     ax.scatter(ref_p[-1, 0], ref_p[-1, 1], c="red",    s=60, zorder=5, label="end (ref)")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
-    ax.set_aspect("equal")
     ax.legend()
     ax.set_title(f"{title_prefix} — XY trajectory")
     ax.grid(True, alpha=0.3)
@@ -389,7 +388,7 @@ def main():
     model  = AckermannCarModel(params)
 
     # Simulation parameters — MPC runs at 20 Hz (dt=0.05 s)
-    dt            = 0.05
+    dt            = 0.01
     T_settle      = 1.5
     T_weave       = 10.0   # shorter than EKF test; MPC loop is slower
     v_cmd         = 1.0
@@ -482,38 +481,38 @@ def main():
     print("q norm:", np.linalg.norm(q))
     print("q:", q)
     # ── Step 4: Closed-loop MPC run ───────────────────────────────────────────
-    # print(f"\nRunning MPC closed-loop for {n_avail} steps …", flush=True)
-    # t0 = time.perf_counter()
-    # results, true_states = run_mpc(
-    #     model, ref_states, ref_inputs, mpc_params,
-    #     start_idx=N_settle,
-    #     process_noise_std=0.0,
-    # )
-    # t_run = time.perf_counter() - t0
-    # n_steps = len(results)
-    # print(f"  done in {t_run*1e3:.1f} ms  ({t_run / n_steps * 1e3:.2f} ms/step)")
-    #
-    # # ── Step 5: Summary statistics ────────────────────────────────────────────
-    # true_p = np.array([s.p_W for s in true_states])
-    # ref_p  = np.array([ref_states[N_settle + i].p_W for i in range(n_steps + 1)])
-    # pos_err = np.linalg.norm(true_p - ref_p, axis=-1)
-    #
-    # n_solved  = sum(r.solved for r in results)
-    # n_fallback = n_steps - n_solved
-    #
-    # print(f"\nTracking statistics over {n_steps} steps:")
-    # print(f"  Position RMSE : {np.sqrt(np.mean(pos_err**2)):.4f} m")
-    # print(f"  Position max  : {np.max(pos_err):.4f} m")
-    # print(f"  QP solved     : {n_solved}/{n_steps}")
-    # if n_fallback:
-    #     print(f"  QP fallbacks  : {n_fallback}")
-    #
-    # # ── Step 6: Plots ─────────────────────────────────────────────────────────
-    # plot_mpc_results(
-    #     ref_states, true_states, results, ref_logs,
-    #     start_idx=N_settle,
-    #     title_prefix="MPC (sinusoidal weave)",
-    # )
+    print(f"\nRunning MPC closed-loop for {n_avail} steps …", flush=True)
+    t0 = time.perf_counter()
+    results, true_states = run_mpc(
+        model, ref_states, ref_inputs, mpc_params,
+        start_idx=N_settle,
+        process_noise_std=0.0,
+    )
+    t_run = time.perf_counter() - t0
+    n_steps = len(results)
+    print(f"  done in {t_run*1e3:.1f} ms  ({t_run / n_steps * 1e3:.2f} ms/step)")
+
+    # ── Step 5: Summary statistics ────────────────────────────────────────────
+    true_p = np.array([s.p_W for s in true_states])
+    ref_p  = np.array([ref_states[N_settle + i].p_W for i in range(n_steps + 1)])
+    pos_err = np.linalg.norm(true_p - ref_p, axis=-1)
+
+    n_solved  = sum(r.solved for r in results)
+    n_fallback = n_steps - n_solved
+
+    print(f"\nTracking statistics over {n_steps} steps:")
+    print(f"  Position RMSE : {np.sqrt(np.mean(pos_err**2)):.4f} m")
+    print(f"  Position max  : {np.max(pos_err):.4f} m")
+    print(f"  QP solved     : {n_solved}/{n_steps}")
+    if n_fallback:
+        print(f"  QP fallbacks  : {n_fallback}")
+
+    # ── Step 6: Plots ─────────────────────────────────────────────────────────
+    plot_mpc_results(
+        ref_states, true_states, results, ref_logs,
+        start_idx=N_settle,
+        title_prefix="MPC (sinusoidal weave)",
+    )
 
 
 if __name__ == "__main__":
