@@ -53,6 +53,8 @@ from ackermann_jax import (
     AckermannCarState,
     default_params,
     default_state,
+    pack_error_state,
+    state_difference,
 )
 from ackermann_jax.mpc import (
     MPCParams,
@@ -60,7 +62,10 @@ from ackermann_jax.mpc import (
     MPCState,
     default_mpc_params,
     mpc_step,
+    _compute_FG,
+    _build_prediction_matrices_np
 )
+import scipy.linalg as sla
 
 jax.config.update("jax_enable_x64", False)
 
@@ -408,6 +413,18 @@ def main():
     print(f"  done in {(time.perf_counter() - t0)*1e3:.1f} ms  "
           f"({len(ref_inputs)} steps, settle={N_settle})")
 
+    print("Check that F and G are reasonable to begin with")
+    F,G_settle = _compute_FG(model, ref_states[N_settle], ref_inputs[N_settle], dt)
+    print(f"F Norm: {jnp.linalg.norm(F)}")
+    print(f"G Norm: {jnp.linalg.norm(G_settle)}")
+    print(f"F Eigenvalues, by magnitude: {jnp.sort(jnp.abs(jnp.linalg.eigvals(F)))[::-1]}")
+
+    # Do the same thing, but for the weaving part
+    F_weave, G_weave= _compute_FG(model, ref_states[N_settle+50],ref_inputs[N_settle+50], dt)
+    print("G_settle[0:3, :] (position rows):\n", np.array(G_settle[0:3, :]))
+    print("G_weave [0:3, :] (position rows):\n", np.array(G_weave [0:3, :]))
+    print("G_weave [6:9, :] (velocity rows):\n", np.array(G_weave [6:9, :]))
+
     # ── Step 2: MPC hyperparameters ───────────────────────────────────────────
     N_horizon = 20
     mpc_params = default_mpc_params(N=N_horizon, dt=dt)
@@ -427,39 +444,76 @@ def main():
     jax.block_until_ready(None)
     print(f"  done in {(time.perf_counter() - t0)*1e3:.1f} ms")
 
+    x_pert = AckermannCarState(
+        p_W=ref_states[N_settle].p_W + jnp.array([0.0, 0.1, 0.0]),
+        R_WB = ref_states[N_settle].R_WB,
+        v_W = ref_states[N_settle].v_W,
+        w_B = ref_states[N_settle].w_B,
+        omega_W = ref_states[N_settle].omega_W,
+    )
+    result_test, _ = mpc_step(model, _warmup_state, mpc_params, x_pert)
+    print("du_opt[0] with perturbation:", result_test.du_opt[0])
+    print("u_opt[0]  with perturbation:", result_test.u_opt[0])
+
+    print("Check that position error will actually work")
+    dx0 = pack_error_state(state_difference(x_pert,ref_states[N_settle]))
+    print(f"dx0: {dx0}")
+    print(f"dx0[0:3] (position error, should be ~[0, -0.1, 0]): {dx0[0:3]}")
+
+    print("Check example MPC solve and see if position error lands in zeroed rows")
+    N, nx, nu = mpc_params.N, 16, 5
+    Fs_np = np.stack([np.array(_compute_FG(model, ref_states[N_settle+k], ref_inputs[N_settle+k], dt)[0], dtype=np.float64) for k in range(N)])
+    Gs_np = np.stack([np.array(_compute_FG(model, ref_states[N_settle+k], ref_inputs[N_settle+k], dt)[1], dtype=np.float64) for k in range(N)])
+    Phi, Theta = _build_prediction_matrices_np(Fs_np, Gs_np)
+
+    Q_np  = np.array(mpc_params.Q,  dtype=np.float64)
+    Pf_np = np.array(mpc_params.Pf, dtype=np.float64)
+    R_np  = np.array(mpc_params.R,  dtype=np.float64)
+    Q_bar = sla.block_diag(*([Q_np] * (N-1) + [Pf_np]))
+
+    dx0_np = np.array(pack_error_state(state_difference(ref_states[N_settle],x_pert)), dtype=np.float64)
+
+    Phi_dx0 = Phi @ dx0_np
+    TtQ_Phi_dx0 = Theta.T @ Q_bar @ Phi_dx0
+    q = 2.0 * TtQ_Phi_dx0
+    print("dx0_np:", dx0_np)
+    print("Phi @ dx0 (first 6):", Phi_dx0[:6])          # should show position propagating
+    print("Q_bar @ Phi @ dx0 (first 6):", (Q_bar @ Phi_dx0)[:6])  # zeroed by Q?
+    print("q norm:", np.linalg.norm(q))
+    print("q:", q)
     # ── Step 4: Closed-loop MPC run ───────────────────────────────────────────
-    print(f"\nRunning MPC closed-loop for {n_avail} steps …", flush=True)
-    t0 = time.perf_counter()
-    results, true_states = run_mpc(
-        model, ref_states, ref_inputs, mpc_params,
-        start_idx=N_settle,
-        process_noise_std=0.0,
-    )
-    t_run = time.perf_counter() - t0
-    n_steps = len(results)
-    print(f"  done in {t_run*1e3:.1f} ms  ({t_run / n_steps * 1e3:.2f} ms/step)")
-
-    # ── Step 5: Summary statistics ────────────────────────────────────────────
-    true_p = np.array([s.p_W for s in true_states])
-    ref_p  = np.array([ref_states[N_settle + i].p_W for i in range(n_steps + 1)])
-    pos_err = np.linalg.norm(true_p - ref_p, axis=-1)
-
-    n_solved  = sum(r.solved for r in results)
-    n_fallback = n_steps - n_solved
-
-    print(f"\nTracking statistics over {n_steps} steps:")
-    print(f"  Position RMSE : {np.sqrt(np.mean(pos_err**2)):.4f} m")
-    print(f"  Position max  : {np.max(pos_err):.4f} m")
-    print(f"  QP solved     : {n_solved}/{n_steps}")
-    if n_fallback:
-        print(f"  QP fallbacks  : {n_fallback}")
-
-    # ── Step 6: Plots ─────────────────────────────────────────────────────────
-    plot_mpc_results(
-        ref_states, true_states, results, ref_logs,
-        start_idx=N_settle,
-        title_prefix="MPC (sinusoidal weave)",
-    )
+    # print(f"\nRunning MPC closed-loop for {n_avail} steps …", flush=True)
+    # t0 = time.perf_counter()
+    # results, true_states = run_mpc(
+    #     model, ref_states, ref_inputs, mpc_params,
+    #     start_idx=N_settle,
+    #     process_noise_std=0.0,
+    # )
+    # t_run = time.perf_counter() - t0
+    # n_steps = len(results)
+    # print(f"  done in {t_run*1e3:.1f} ms  ({t_run / n_steps * 1e3:.2f} ms/step)")
+    #
+    # # ── Step 5: Summary statistics ────────────────────────────────────────────
+    # true_p = np.array([s.p_W for s in true_states])
+    # ref_p  = np.array([ref_states[N_settle + i].p_W for i in range(n_steps + 1)])
+    # pos_err = np.linalg.norm(true_p - ref_p, axis=-1)
+    #
+    # n_solved  = sum(r.solved for r in results)
+    # n_fallback = n_steps - n_solved
+    #
+    # print(f"\nTracking statistics over {n_steps} steps:")
+    # print(f"  Position RMSE : {np.sqrt(np.mean(pos_err**2)):.4f} m")
+    # print(f"  Position max  : {np.max(pos_err):.4f} m")
+    # print(f"  QP solved     : {n_solved}/{n_steps}")
+    # if n_fallback:
+    #     print(f"  QP fallbacks  : {n_fallback}")
+    #
+    # # ── Step 6: Plots ─────────────────────────────────────────────────────────
+    # plot_mpc_results(
+    #     ref_states, true_states, results, ref_logs,
+    #     start_idx=N_settle,
+    #     title_prefix="MPC (sinusoidal weave)",
+    # )
 
 
 if __name__ == "__main__":
