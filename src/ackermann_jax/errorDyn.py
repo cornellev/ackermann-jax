@@ -111,5 +111,6 @@ def error_dynamics(
     x_nom_next = model.step(x_nom, u, dt, method=method)
     x_perturbed_next = model.step(x_perturbed, u, dt, method=method)
 
-    dx_next = state_difference(x_perturbed_next, x_nom_next)
+    # state_difference(ref, x) = x − ref, so ref=nom, x=perturbed gives δx_{k+1}
+    dx_next = state_difference(x_nom_next, x_perturbed_next)
     return pack_error_state(dx_next)
