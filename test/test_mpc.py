@@ -425,7 +425,7 @@ def main():
     print("G_weave [6:9, :] (velocity rows):\n", np.array(G_weave [6:9, :]))
 
     # ── Step 2: MPC hyperparameters ───────────────────────────────────────────
-    N_horizon = 20
+    N_horizon = 10
     mpc_params = default_mpc_params(N=N_horizon, dt=dt)
 
     n_avail = len(ref_inputs) - N_settle - N_horizon

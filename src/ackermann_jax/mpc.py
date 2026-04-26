@@ -445,11 +445,11 @@ def mpc_step(
     dx0 = pack_error_state(state_difference(mpc_state.x_ref[0], x_current))
 
     # ── 2. LTV Jacobians F_k, G_k (JIT-compiled per step) ──────────────────
-    Fs_jax, Gs_jax = [], []
-    for k in range(N):
-        F, G = _compute_FG(model, mpc_state.x_ref[k], mpc_state.u_ref[k], dt)
-        Fs_jax.append(F)
-        Gs_jax.append(G)
+    x_ref_batch = jax.tree.map(lambda *xs: jnp.stack(xs), *mpc_state.x_ref[:N])
+    u_ref_batch = jax.tree.map(lambda *us: jnp.stack(us), *mpc_state.u_ref[:N])
+
+    FG_batched = jax.vmap(lambda x, u: _compute_FG(model, x, u, dt))(x_ref_batch, u_ref_batch)
+    Fs_jax, Gs_jax = FG_batched
 
     # ── 3. Prediction matrices in float64 numpy ─────────────────────────────
     # Using float64 because the stiff modes of this model have |λ| >> 1
