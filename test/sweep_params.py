@@ -7,32 +7,37 @@ Because AckermannCarModel holds Python-level scalars inside its parameter
 dataclasses, we cannot vmap *through* the model constructor.  Instead we:
 
   1. Build a single base model with default params.
-  2. Write a `simulate_one` function that accepts (k_n, c_n, I_w_fac, tau_spin)
+  2. Write a `simulate_one` function that accepts
+     (k_n, c_n, I_w_fac, tau_spin, c_kappa, c_alpha)
      as plain JAX scalars, patches the relevant fields on-the-fly inside the
-     scan body using those scalars, and returns scalar score metrics.
+     scan body, and returns scalar score metrics.
   3. vmap `simulate_one` over a flat grid of parameter combinations.
-  4. Reshape results back to the grid and plot a heatmap per metric.
+  4. Reshape results back to the grid and plot heatmaps.
 
-Patching strategy: rather than reconstructing the full model inside the scan
-(which would re-trigger Python-level dataclass construction), we pass the
-swept parameters directly into a custom `xdot_patched` closure that overrides
-k_n, c_n, I_w, and b_w at the point of use.  Everything else (geometry,
-tire model, chassis inertia) stays fixed from the base model.
+Swept parameters (6 total):
+  k_n      — contact spring stiffness      [N/m]
+  c_n      — contact spring damping        [N·s/m]
+  I_w_fac  — wheel inertia scale factor    [–]
+  tau_spin — wheel speed settling time     [s]
+  c_kappa  — longitudinal tire stiffness   [N/–]
+  c_alpha  — lateral tire stiffness        [N/rad]
 
-Metrics scored (all dimensionless or normalised):
-  S1  bounce      — max(p_z) - p_z[0]           : car left the ground?     (lower=better)
-  S2  settle_vz   — RMS of v_z over last 70% of settle phase                (lower=better)
-  S3  pitch_osc   — RMS of w_B[1] (pitch rate) during weave phase           (lower=better)
-  S4  roll_osc    — RMS of w_B[0] (roll rate) during weave phase            (lower=better)
-  S5  omega_rough — RMS of Δω_W per step during weave (wheel jitter)        (lower=better)
-  S6  z_drift     — |mean(p_z) - p_z[0]| during weave (rode off ground?)   (lower=better)
-  composite       — weighted sum of normalised metrics                       (lower=better)
+Metrics scored (all lower=better):
+  S1  bounce       — max(p_z) - p_z[0]              : car left ground?
+  S2  settle_vz    — RMS v_z over last 50% of settle
+  S3  pitch_osc    — RMS w_B[1] during weave
+  S4  roll_osc     — RMS w_B[0] during weave
+  S5  omega_rough  — RMS Δω_W/dt during weave (jitter)
+  S6  z_drift      — |mean(p_z) - p_z[0]| during weave
+  S7  slip_cycling — wheel direction-reversal rate during weave
+  composite        — weighted sum of normalised metrics
 """
 
 from __future__ import annotations
 
 import itertools
 import time
+import addcopyfighandler #noqa
 
 import jax
 import jax.numpy as jnp
@@ -52,15 +57,17 @@ from ackermann_jax import ( #noqa
 
 # ── Sweep grid definition ─────────────────────────────────────────────────────
 # Edit these to change the search space.
+# WARNING: total combos = product of all lengths. Keep grids coarse first.
 
-# K_N_VALUES    = [500., 1000., 1500., 2000., 3000., 4000.]   # N/m
-K_N_VALUES = np.arange(100, 4500, 50, dtype=np.float32)   # N/m
-# C_N_VALUES    = [30.,  60.,   100.,  150.,  200.,  300.]     # N·s/m
-C_N_VALUES = np.arange(10, 500, 5, dtype=np.float32)      # N·s/m
-# IW_FAC_VALUES = [1.,   2.,    5.,    10.]                    # inertia scale
-IW_FAC_VALUES = [10.]
-# TAU_SPIN_VALUES = [0.05, 0.1, 0.2, 0.3]                     # wheel settle time [s]
-TAU_SPIN_VALUES = [0.05]
+K_N_VALUES      = [500.,  1000., 1500., 2000., 3000.]   # N/m
+C_N_VALUES      = [30.,   60.,   100.,  150.,  250.]     # N·s/m
+IW_FAC_VALUES   = [1.,    2.,    5.,    10.]             # inertia scale factor
+TAU_SPIN_VALUES = [0.05,  0.1,   0.2,   0.3]            # wheel settle time [s]
+C_KAPPA_VALUES  = [5.,    10.,   20.,   30.]             # longitudinal tire stiffness
+C_ALPHA_VALUES  = [5.,    10.,   20.,   25.]             # lateral tire stiffness
+
+# Column indices in the flat grid array — update if you reorder above
+_COL_KN, _COL_CN, _COL_IW, _COL_TAU, _COL_CK, _COL_CA = 0, 1, 2, 3, 4, 5
 
 # Simulation settings
 DT        = 0.01      # fine dt — sweep finds params that also work at coarse dt
@@ -69,8 +76,18 @@ T_WEAVE   = 3.0       # [s]  shorter for sweep speed
 V_CMD     = 1.0
 Z0        = 0.08      # initial height [m]
 
-# Scoring weights  [bounce, settle_vz, pitch_osc, roll_osc, omega_rough, z_drift]
-WEIGHTS = np.array([2.0, 0.5, 3.0, 3.0, 2.5, 2.0])
+# Scoring weights — [bounce, settle_vz, pitch_osc, roll_osc, omega_rough, z_drift, slip_cycling]
+WEIGHTS = np.array([3.0, 1.5, 2.0, 2.0, 4.0, 2.0, 3.0])
+
+METRIC_NAMES = [
+    "bounce [m]",
+    "settle_vz [m/s]",
+    "pitch_rms [rad/s]",
+    "roll_rms [rad/s]",
+    "omega_rough [rad/s²]",
+    "z_drift [m]",
+    "slip_cycling [–]",
+]
 
 # ── Base model (geometry/tires/chassis fixed) ─────────────────────────────────
 _BASE_PARAMS = default_params()
@@ -89,15 +106,16 @@ def _normal_forces_patched(p_i_W, v_i_W, k_n, c_n):
     return jnp.maximum(0.0, Fz)
 
 
-def simulate_one(k_n, c_n, I_w_fac, tau_spin):
+def simulate_one(k_n, c_n, I_w_fac, tau_spin, c_kappa, c_alpha):
     """
     Run settle + weave for one parameter combination.
-    All arguments are JAX scalars (float32) so this function is vmappable.
+    All arguments are JAX scalars (float32) — fully vmappable.
 
-    Returns a (6,) float32 array of raw metric values.
+    Returns a (7,) float32 array of raw metric values.
     """
-    p   = _BASE_PARAMS
+    p    = _BASE_PARAMS
     geom = p.geom
+    tp   = p.tires
 
     m_wheel = 0.05
     I_w = I_w_fac * 0.5 * m_wheel * geom.wheel_radius ** 2
@@ -139,8 +157,23 @@ def simulate_one(k_n, c_n, I_w_fac, tau_spin):
 
         v_t = jnp.sum(t_W * v_i_W, axis=-1)
         v_n = jnp.sum(n_W * v_i_W, axis=-1)
-        kappa, alpha = _BASE_MODEL._slip(omega_w, v_t, v_n)
-        Fx, Fy = _BASE_MODEL._tire_forces(kappa, alpha, Fz)
+
+        # ← patched slip: uses base eps_v but swept c_kappa / c_alpha
+        kappa_max = 2.0
+        rw   = geom.wheel_radius
+        eps_v = tp.eps_v
+        denom = jnp.sqrt(v_t * v_t + eps_v * eps_v)
+        kappa = kappa_max * jnp.tanh((rw * omega_w - v_t) / denom / kappa_max)
+        alpha = 0.5 * jnp.tanh(jnp.arctan2(v_n, jnp.abs(v_t) + eps_v) / 0.5)
+
+        # ← patched tire forces with swept c_kappa / c_alpha
+        Fx_star = c_kappa * kappa
+        Fy_star = -c_alpha * alpha
+        Fmax = tp.mu * Fz
+        mag   = jnp.sqrt(Fx_star**2 + Fy_star**2 + tp.eps_force)
+        scale = jnp.minimum(1.0, Fmax / jnp.sqrt(mag**2 + Fmax**2))
+        Fx = scale * Fx_star
+        Fy = scale * Fy_star
 
         f_i_W = Fx[:, None] * t_W + Fy[:, None] * n_W + Fz[:, None] * z_W[None, :]
         F_W   = jnp.sum(f_i_W, axis=0)
@@ -259,15 +292,26 @@ def simulate_one(k_n, c_n, I_w_fac, tau_spin):
     # S6: z drift during weave (car leaving ground)
     s6_zdrift = jnp.abs(jnp.mean(p_z[weave_slice]) - Z0)
 
-    return jnp.array([s1_bounce, s2_settle, s3_pitch, s4_roll, s5_rough, s6_zdrift],
-                     dtype=jnp.float32)
+    # S7: wheel direction reversals during weave — slip limit-cycling indicator
+    # count steps where any wheel flips sign, normalised to [0, 1]
+    omega_weave = omega[weave_slice]                          # (N_weave, 4)
+    sign_flips  = jnp.diff(jnp.sign(omega_weave), axis=0)    # nonzero = flip
+    s7_slip     = jnp.sum(sign_flips != 0).astype(jnp.float32) / float(N_weave * 4)
+
+    return jnp.array(
+        [s1_bounce, s2_settle, s3_pitch, s4_roll, s5_rough, s6_zdrift, s7_slip],
+        dtype=jnp.float32,
+    )
 
 
 # ── Build flat parameter grid ─────────────────────────────────────────────────
 
 def build_grid():
-    combos = list(itertools.product(K_N_VALUES, C_N_VALUES, IW_FAC_VALUES, TAU_SPIN_VALUES))
-    arr    = np.array(combos, dtype=np.float32)   # (N_combos, 4)
+    combos = list(itertools.product(
+        K_N_VALUES, C_N_VALUES, IW_FAC_VALUES, TAU_SPIN_VALUES,
+        C_KAPPA_VALUES, C_ALPHA_VALUES,
+    ))
+    arr = np.array(combos, dtype=np.float32)   # (N_combos, 6)
     return arr, combos
 
 # ── Run sweep ─────────────────────────────────────────────────────────────────
@@ -275,81 +319,90 @@ def build_grid():
 def run_sweep():
     grid, combos = build_grid()
     N = len(combos)
-    print(f"Sweeping {N} parameter combinations "
-          f"({len(K_N_VALUES)} k_n × {len(C_N_VALUES)} c_n × "
-          f"{len(IW_FAC_VALUES)} I_w_fac × {len(TAU_SPIN_VALUES)} tau_spin)")
-
-    k_n_arr    = jnp.array(grid[:, 0])
-    c_n_arr    = jnp.array(grid[:, 1])
-    iw_arr     = jnp.array(grid[:, 2])
-    tau_arr    = jnp.array(grid[:, 3])
+    print(f"Sweeping {N} parameter combinations:")
+    print(f"  {len(K_N_VALUES)} k_n  × {len(C_N_VALUES)} c_n  × "
+          f"{len(IW_FAC_VALUES)} I_fac × {len(TAU_SPIN_VALUES)} tau_spin × "
+          f"{len(C_KAPPA_VALUES)} c_kappa × {len(C_ALPHA_VALUES)} c_alpha")
 
     sim_batched = jax.jit(jax.vmap(simulate_one))
 
     print("JIT compiling…", flush=True)
     t0      = time.perf_counter()
-    metrics = sim_batched(k_n_arr, c_n_arr, iw_arr, tau_arr)
+    metrics = sim_batched(
+        jnp.array(grid[:, _COL_KN]),
+        jnp.array(grid[:, _COL_CN]),
+        jnp.array(grid[:, _COL_IW]),
+        jnp.array(grid[:, _COL_TAU]),
+        jnp.array(grid[:, _COL_CK]),
+        jnp.array(grid[:, _COL_CA]),
+    )
     metrics.block_until_ready()
     t_compile = time.perf_counter() - t0
-    print(f"  compile + run: {t_compile:.1f} s")
+    print(f"  compile + first run: {t_compile:.1f} s")
 
     print("Second run (execution only)…", flush=True)
     t0      = time.perf_counter()
-    metrics = sim_batched(k_n_arr, c_n_arr, iw_arr, tau_arr)
+    metrics = sim_batched(
+        jnp.array(grid[:, _COL_KN]),
+        jnp.array(grid[:, _COL_CN]),
+        jnp.array(grid[:, _COL_IW]),
+        jnp.array(grid[:, _COL_TAU]),
+        jnp.array(grid[:, _COL_CK]),
+        jnp.array(grid[:, _COL_CA]),
+    )
     metrics.block_until_ready()
-    t_run   = time.perf_counter() - t0
+    t_run = time.perf_counter() - t0
     print(f"  run only: {t_run*1e3:.1f} ms  ({t_run/N*1e3:.3f} ms/combo)")
 
-    metrics_np = np.array(metrics)   # (N, 6)
-    return metrics_np, grid, combos
+    return np.array(metrics), grid, combos
 
 # ── Scoring and ranking ───────────────────────────────────────────────────────
 
-METRIC_NAMES = ["bounce [m]", "settle_vz [m/s]", "pitch_rms [rad/s]",
-                "roll_rms [rad/s]", "omega_rough [rad/s²]", "z_drift [m]"]
-
 def compute_composite(metrics_np):
-    # Normalise each metric to [0,1] across the sweep
     mn  = metrics_np.min(axis=0, keepdims=True)
     mx  = metrics_np.max(axis=0, keepdims=True)
     rng = np.maximum(mx - mn, 1e-8)
-    norm = (metrics_np - mn) / rng                    # (N, 6)
-    composite = norm @ WEIGHTS / WEIGHTS.sum()        # (N,)
+    norm      = (metrics_np - mn) / rng
+    composite = norm @ WEIGHTS / WEIGHTS.sum()
     return composite, norm
 
 def print_top_k(metrics_np, grid, combos, k=10):
     composite, _ = compute_composite(metrics_np)
     order = np.argsort(composite)
 
-    print(f"\n{'─'*90}")
-    print(f"{'Rank':>4}  {'k_n':>6}  {'c_n':>5}  {'I_fac':>5}  {'τ_spin':>6}  "
-          + "  ".join(f"{n[:10]:>10}" for n in METRIC_NAMES) + "  composite")
-    print(f"{'─'*90}")
-    for rank, idx in enumerate(order[:k]):
-        kn, cn, iw, ts = grid[idx]
-        vals = "  ".join(f"{metrics_np[idx, j]:10.4f}" for j in range(6))
-        print(f"{rank+1:>4}  {kn:>6.0f}  {cn:>5.0f}  {iw:>5.0f}  {ts:>6.3f}  "
-              f"{vals}  {composite[idx]:.4f}")
+    col_w = 10
+    hdr   = (f"{'Rank':>4}  {'k_n':>6}  {'c_n':>5}  {'Ifac':>4}  "
+             f"{'τspin':>5}  {'Ckap':>5}  {'Calp':>5}  "
+             + "  ".join(f"{n[:col_w]:>{col_w}}" for n in METRIC_NAMES)
+             + "  composite")
+    print(f"\n{'─'*len(hdr)}")
+    print(hdr)
+    print(f"{'─'*len(hdr)}")
 
-    print(f"\n{'─'*90}")
-    print("Top-1 parameter set:")
+    for rank, idx in enumerate(order[:k]):
+        kn, cn, iw, ts, ck, ca = grid[idx]
+        vals = "  ".join(f"{metrics_np[idx, j]:{col_w}.4f}" for j in range(len(METRIC_NAMES)))
+        print(f"{rank+1:>4}  {kn:>6.0f}  {cn:>5.0f}  {iw:>4.0f}  "
+              f"{ts:>5.3f}  {ck:>5.0f}  {ca:>5.0f}  {vals}  {composite[idx]:.4f}")
+
+    print(f"\n{'─'*len(hdr)}")
     best = order[0]
-    kn, cn, iw, ts = grid[best]
+    kn, cn, iw, ts, ck, ca = grid[best]
+    print("Top-1 parameter set:")
     print(f"  k_n     = {kn:.0f}  N/m")
     print(f"  c_n     = {cn:.0f}  N·s/m")
-    print(f"  I_w_fac = {iw:.0f}  (× physical inertia)")
+    print(f"  I_w_fac = {iw:.0f}")
     print(f"  tau_spin= {ts:.3f} s")
-    m_wheel = 0.05
-    r_w     = 0.03
-    I_w = iw * 0.5 * m_wheel * r_w**2
-    b_w = I_w / ts
-    omn = np.sqrt(4 * kn / 1.5)
+    print(f"  c_kappa = {ck:.0f}")
+    print(f"  c_alpha = {ca:.0f}")
+    m_w = 0.05; r_w = 0.03
+    I_w  = iw * 0.5 * m_w * r_w**2
+    b_w_ = I_w / ts
+    omn  = np.sqrt(4 * kn / 1.5)
     zeta = cn / (2 * np.sqrt(kn * 1.5 / 4))
     print(f"\n  Derived:")
-    print(f"  I_w  = {I_w:.5f} kg·m²")
-    print(f"  b_w  = {b_w:.5f} N·m·s")
-    print(f"  ωn   = {omn:.2f} rad/s  (fn = {omn/(2*np.pi):.2f} Hz)")
-    print(f"  ζ    = {zeta:.3f}")
+    print(f"  I_w  = {I_w:.5f} kg·m²  |  b_w = {b_w_:.5f} N·m·s")
+    print(f"  ωn   = {omn:.2f} rad/s  (fn = {omn/(2*np.pi):.2f} Hz)  |  ζ = {zeta:.3f}")
     return order[0], grid[order[0]]
 
 # ── Heatmap plots ─────────────────────────────────────────────────────────────
@@ -365,94 +418,135 @@ def plot_heatmaps(metrics_np, grid, combos):
 
     kn_vals  = np.array(K_N_VALUES)
     cn_vals  = np.array(C_N_VALUES)
-    iw_vals  = np.array(IW_FAC_VALUES)
-    tau_vals = np.array(TAU_SPIN_VALUES)
+# ── Heatmap plots ─────────────────────────────────────────────────────────────
 
-    Nkn, Ncn, Niw, Ntau = len(kn_vals), len(cn_vals), len(iw_vals), len(tau_vals)
-    n_metrics = all_metrics.shape[1]
+def _safe_imshow(ax, mat, cmap="RdYlGn_r"):
+    """imshow with PowerNorm, gracefully handles constant/all-nan slices."""
+    finite_vals = mat[np.isfinite(mat)]
+    if finite_vals.size == 0:
+        ax.text(0.5, 0.5, "no finite data", ha="center", va="center",
+                transform=ax.transAxes, fontsize=8)
+        ax.axis("off")
+        return None
+    vmin = float(np.nanmin(mat))
+    vmax = float(np.nanmax(mat))
+    if np.isclose(vmin, vmax):
+        norm = mcolors.NoNorm()
+    else:
+        safe_vmin = max(vmin, 0.0)
+        safe_vmax = max(vmax, safe_vmin + 1e-8)
+        norm = mcolors.PowerNorm(gamma=0.5, vmin=safe_vmin, vmax=safe_vmax)
+    return ax.imshow(mat, aspect="auto", cmap=cmap, origin="lower", norm=norm)
 
-    for iw_idx, iw in enumerate(iw_vals):
-        for tau_idx, tau in enumerate(tau_vals):
-            fig, axes = plt.subplots(2, 4, figsize=(18, 8))
+
+def plot_heatmaps(metrics_np, grid, combos):
+    """
+    Outer loop: (c_kappa, c_alpha) pairs  →  one figure per pair.
+    Inner heatmap: k_n (y-axis) × c_n (x-axis).
+    Each cell shows the MIN composite/metric over (I_w_fac, tau_spin),
+    so the best wheel params are automatically selected per contact-param cell.
+    White star marks the best cell per subplot.
+    """
+    composite, _ = compute_composite(metrics_np)
+    all_metrics  = np.concatenate([metrics_np, composite[:, None]], axis=1)
+    all_names    = METRIC_NAMES + ["composite (lower=better)"]
+    n_metrics    = all_metrics.shape[1]
+
+    kn_vals = np.array(sorted(set(grid[:, _COL_KN].tolist())))
+    cn_vals = np.array(sorted(set(grid[:, _COL_CN].tolist())))
+    ck_vals = np.array(sorted(set(grid[:, _COL_CK].tolist())))
+    ca_vals = np.array(sorted(set(grid[:, _COL_CA].tolist())))
+    Nkn, Ncn = len(kn_vals), len(cn_vals)
+
+    # Index lookup maps for speed
+    kn_idx = {float(v): i for i, v in enumerate(kn_vals)}
+    cn_idx = {float(v): i for i, v in enumerate(cn_vals)}
+
+    for ck in ck_vals:
+        for ca in ca_vals:
+            fig, axes = plt.subplots(2, 4, figsize=(20, 9))
             axes = axes.flatten()
-            fig.suptitle(f"I_w_fac={iw:.0f}  tau_spin={tau:.3f} s", fontsize=13)
+            fig.suptitle(
+                f"c_kappa={ck:.0f}  c_alpha={ca:.0f}  "
+                f"(min over I_w_fac & tau_spin per cell)",
+                fontsize=12,
+            )
 
-            # Select rows matching this (iw, tau)
-            mask = (grid[:, 2] == iw) & (grid[:, 3] == tau)
-            sub_grid    = grid[mask]                    # (Nkn*Ncn, 4)
-            sub_metrics = all_metrics[mask]             # (Nkn*Ncn, n_metrics+1)
+            mask    = (grid[:, _COL_CK] == ck) & (grid[:, _COL_CA] == ca)
+            sub_g   = grid[mask]
+            sub_met = all_metrics[mask]
 
             for m_idx in range(n_metrics):
-                ax = axes[m_idx]
-                mat = np.full((Nkn, Ncn), np.nan)
+                ax  = axes[m_idx]
+                mat = np.full((Nkn, Ncn), np.inf)
 
-                for row_idx in range(sub_grid.shape[0]):
-                    kn  = sub_grid[row_idx, 0]
-                    cn  = sub_grid[row_idx, 1]
-                    ki  = np.where(kn_vals == kn)[0][0]
-                    ci  = np.where(cn_vals == cn)[0][0]
-                    mat[ki, ci] = sub_metrics[row_idx, m_idx]
+                for row_idx in range(sub_g.shape[0]):
+                    ki  = kn_idx[float(sub_g[row_idx, _COL_KN])]
+                    ci  = cn_idx[float(sub_g[row_idx, _COL_CN])]
+                    val = float(sub_met[row_idx, m_idx])
+                    if val < mat[ki, ci]:
+                        mat[ki, ci] = val
+                mat[mat == np.inf] = np.nan
 
-                # Diverging colormap for composite, sequential for raw metrics
-                cmap  = "RdYlGn_r"
-                im    = ax.imshow(mat, aspect="auto", cmap=cmap,
-                                  origin="lower",
-                                  norm=mcolors.PowerNorm(gamma=0.5,
-                                                         vmin=np.nanmin(mat),
-                                                         vmax=np.nanmax(mat)))
-                plt.colorbar(im, ax=ax, shrink=0.8)
+                im = _safe_imshow(ax, mat)
+                if im is not None:
+                    plt.colorbar(im, ax=ax, shrink=0.8)
+                    if np.any(np.isfinite(mat)):
+                        bi, bj = np.unravel_index(np.nanargmin(mat), mat.shape)
+                        ax.plot(bj, bi, "w*", markersize=12)
 
-                ax.set_xticks(range(Ncn))
-                ax.set_xticklabels([f"{v:.0f}" for v in cn_vals], fontsize=7)
-                ax.set_yticks(range(Nkn))
-                ax.set_yticklabels([f"{v:.0f}" for v in kn_vals], fontsize=7)
+                step_x = max(1, Ncn // 7)
+                step_y = max(1, Nkn // 7)
+                ax.set_xticks(range(0, Ncn, step_x))
+                ax.set_xticklabels(
+                    [f"{cn_vals[i]:.0f}" for i in range(0, Ncn, step_x)],
+                    fontsize=6, rotation=45,
+                )
+                ax.set_yticks(range(0, Nkn, step_y))
+                ax.set_yticklabels(
+                    [f"{kn_vals[i]:.0f}" for i in range(0, Nkn, step_y)],
+                    fontsize=6,
+                )
                 ax.set_xlabel("c_n [N·s/m]", fontsize=8)
                 ax.set_ylabel("k_n [N/m]",   fontsize=8)
                 ax.set_title(all_names[m_idx], fontsize=9)
 
-                # Star the best cell
-                best_flat = np.nanargmin(mat)
-                bi, bj    = np.unravel_index(best_flat, mat.shape)
-                ax.plot(bj, bi, "w*", markersize=12)
-
             for ax in axes[n_metrics:]:
                 ax.set_visible(False)
-
             fig.tight_layout()
 
     plt.show()
 
+
 # ── Trajectory plot for best params ──────────────────────────────────────────
 
 def plot_best_trajectory(best_idx, best_params):
-    kn, cn, iw, ts = best_params
+    kn, cn, iw, ts, ck, ca = best_params
     print(f"\nPlotting trajectory for best params: "
-          f"k_n={kn:.0f}  c_n={cn:.0f}  I_fac={iw:.0f}  tau={ts:.3f}")
+          f"k_n={kn:.0f}  c_n={cn:.0f}  I_fac={iw:.0f}  "
+          f"tau={ts:.3f}  c_kappa={ck:.0f}  c_alpha={ca:.0f}")
 
     N_settle = int(T_SETTLE / DT)
     N_weave  = int(T_WEAVE  / DT)
     N_total  = N_settle + N_weave
     t_arr    = np.arange(N_total) * DT
 
-    # Re-run scalar simulation for full logging
-    logs_list = {"p_z": [], "v_z": [], "roll": [], "pitch": [], "yaw": [],
-                 "omega": [], "Fz_mean": []}
+    logs_list = {"p_z": [], "v_z": [], "roll": [], "pitch": [],
+                 "yaw": [], "omega": []}
 
-    x0 = default_state(z0=Z0)
+    x0    = default_state(z0=Z0)
+    p_new = default_params()
 
-    from ackermann_jax.parameters import ContactParams, WheelParams
-    import copy
-    p_new  = default_params()
-    m_w    = 0.05
-    I_w    = float(iw) * 0.5 * m_w * 0.03**2
-    b_w_   = I_w / float(ts)
-
-    # Rebuild model with best params
-    from ackermann_jax.parameters import ContactParams, WheelParams
     import dataclasses
+    m_w = 0.05; r_w = 0.03
+    I_w  = float(iw) * 0.5 * m_w * r_w**2
+    b_w_ = I_w / float(ts)
+
     new_contact = dataclasses.replace(p_new.contact, k_n=float(kn), c_n=float(cn))
     new_wheels  = dataclasses.replace(p_new.wheels,  I_w=I_w, b_w=b_w_)
-    new_p       = dataclasses.replace(p_new, contact=new_contact, wheels=new_wheels)
+    new_tires   = dataclasses.replace(p_new.tires,   C_kappa=float(ck), C_alpha=float(ca))
+    new_p       = dataclasses.replace(p_new, contact=new_contact,
+                                      wheels=new_wheels, tires=new_tires)
     best_model  = AckermannCarModel(new_p)
 
     x = x0
@@ -487,8 +581,11 @@ def plot_best_trajectory(best_idx, best_params):
         logs_list["omega"].append(np.array(x.omega_W))
 
     fig, axes = plt.subplots(3, 2, sharex=True, figsize=(14, 10))
-    fig.suptitle(f"Best params: k_n={kn:.0f}  c_n={cn:.0f}  "
-                 f"I_fac={iw:.0f}  tau_spin={ts:.3f} s", fontsize=12)
+    fig.suptitle(
+        f"Best params: k_n={kn:.0f}  c_n={cn:.0f}  I_fac={iw:.0f}  "
+        f"tau_spin={ts:.3f} s  c_kappa={ck:.0f}  c_alpha={ca:.0f}",
+        fontsize=11,
+    )
 
     axes[0,0].plot(t_arr, logs_list["p_z"])
     axes[0,0].axhline(Z0, color="k", linestyle="--", linewidth=0.7, label=f"z0={Z0}")
@@ -516,22 +613,25 @@ def plot_best_trajectory(best_idx, best_params):
     axes[2,0].axvline(T_SETTLE, color="r", linewidth=0.5)
     axes[2,0].set_xlabel("t [s]")
 
-    # Damping ratio and ωn annotation
     omn  = np.sqrt(4 * kn / 1.5)
     zeta = cn / (2 * np.sqrt(kn * 1.5 / 4))
+    I_w_val = iw * 0.5 * 0.05 * 0.03**2
     axes[2,1].axis("off")
-    axes[2,1].text(0.1, 0.6,
+    axes[2,1].text(0.05, 0.97,
         f"Contact spring:\n"
         f"  k_n  = {kn:.0f} N/m\n"
         f"  c_n  = {cn:.0f} N·s/m\n"
         f"  ωn   = {omn:.2f} rad/s  (fn={omn/(2*np.pi):.2f} Hz)\n"
         f"  ζ    = {zeta:.3f}\n\n"
         f"Wheel inertia:\n"
-        f"  I_fac   = {iw:.0f}\n"
-        f"  tau_spin= {ts:.3f} s\n"
-        f"  I_w  = {iw*0.5*0.05*0.0009:.5f} kg·m²\n"
-        f"  b_w  = {iw*0.5*0.05*0.0009/ts:.5f} N·m·s",
-        transform=axes[2,1].transAxes, fontsize=10, family="monospace",
+        f"  I_fac    = {iw:.0f}\n"
+        f"  tau_spin = {ts:.3f} s\n"
+        f"  I_w      = {I_w_val:.5f} kg·m²\n"
+        f"  b_w      = {I_w_val/ts:.5f} N·m·s\n\n"
+        f"Tire model:\n"
+        f"  C_kappa  = {ck:.0f}\n"
+        f"  C_alpha  = {ca:.0f}",
+        transform=axes[2,1].transAxes, fontsize=9, family="monospace",
         verticalalignment="top",
         bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
 

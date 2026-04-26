@@ -172,8 +172,9 @@ class AckermannCarModel:
         p = self.params
         R = x.R_WB.as_matrix()
 
-        v_B = R.T @ x.v_W
-        v_X = v_B[0]
+        # v_B = R.T @ x.v_W
+        # v_X = v_B[0]
+        v_X = jnp.linalg.norm(x.v_W[:2])
         err = v_cmd - v_X
         integ_cand = jnp.clip(integral_state + err * dt,-integ_max, integ_max)
 
@@ -434,7 +435,13 @@ def default_params() -> AckermannCarParams:
     # print("Wheel inertia:", I_w)
     # we want wheels to settle within about 0.1s, so:
     tau_spin = 0.3 # seconds #NOTE: wheel damping was too high here causing issues
-    b_w = I_w / tau_spin
+    b_w = jnp.array([
+        I_w / 0.5,
+        I_w / 0.5,
+        I_w / 0.1,
+        I_w / 0.1,
+    ], dtype=jnp.float32)
+    # b_w = I_w / tau_spin
     wheels = WheelParams(I_w=I_w, b_w=b_w) # these need to be dynamically determined as well
     tires = TireParams(mu=0.9, C_kappa=30.0, C_alpha=25.0,eps_v=1e-3)
     contact = ContactParams(k_n=2e3,c_n=50,z0=0.0)
