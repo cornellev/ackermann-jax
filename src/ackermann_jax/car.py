@@ -153,8 +153,10 @@ class AckermannCarModel:
             xdot = self.xdot(x,u)
             return self._integrate_euler(x,xdot,dt)
         if method == "semi_implicit_euler":
-            xdot = self.xdot(x,u)
-            return self._integrate_semi_implicit(x,xdot,dt)
+            xdot, v_t, kappa, Fx, tau_cmd = self._xdot_with_intermediates(x,u)
+            return self._integrate_semi_implicit(x, xdot, dt, v_t, kappa, Fx, tau_cmd)
+            # xdot = self.xdot(x,u)
+            # return self._integrate_semi_implicit(x,xdot,dt)
         raise ValueError(f"Unknown integration method {method}")
 
     def map_velocity_to_wheel_torques(
@@ -318,6 +320,119 @@ class AckermannCarModel:
         Fy = scale * Fy_star
         return Fx, Fy
 
+    def _integrate_semi_implicit_wheel(
+        self,
+        x: AckermannCarState,
+        xdot: AckermannCarState,
+        dt: float,
+        # pass v_t and kappa through xdot computation
+        v_t: Array,
+        kappa: Array,
+        Fx: Array,
+        tau_cmd: Array,
+    ) -> Array:
+        """
+        Analytically-stable implicit step for wheel speeds only.
+
+        Linearises Fx(omega) around the current operating point:
+            Fx(omega) ≈ Fx_k + (dFx/domega) * (omega - omega_k)
+        giving a scalar linear ODE per wheel, solved exactly:
+        omega_next = omega_inf + (omega_k - omega_inf) * exp(-lambda * dt)
+
+        Unconditionally stable for all dt, eps_v, and C_kappa.
+        """
+        p = self.params
+        rw = p.geom.wheel_radius
+
+        kappa_max = 2.0
+        eps_v = p.tires.eps_v
+        denom_vt = jnp.sqrt(v_t * v_t + eps_v * eps_v)
+        dkappa_raw_domega = rw / denom_vt
+        kappa_raw = (rw * x.omega_W - v_t) / denom_vt
+        sech2 = 1.0 - jnp.tanh(kappa_raw / kappa_max)**2
+        dkappa_domega = dkappa_raw_domega * sech2
+
+        dFx_domega = p.tires.C_kappa * dkappa_domega
+        lam = (p.wheels.b_w + rw * dFx_domega) / p.wheels.I_w
+
+        numerator = tau_cmd - rw * (Fx - dFx_domega * x.omega_W)
+        denom = p.wheels.b_w + rw * dFx_domega
+        omega_inf = numerator / denom
+        
+        decay = jnp.exp(-lam * dt)
+        omega_w_next = omega_inf + (x.omega_W - omega_inf) * decay
+
+        return omega_w_next
+
+    def _xdot_with_intermediates(self, x: AckermannCarState, u: AckermannCarInput) -> Tuple[AckermannCarState, Array, Array, Array, Array]:
+        """
+        Same as xdot() but also returns (v_t, kappa, Fx, tau_cmd)
+        """
+        p = self.params
+        p_W = x.p_W
+        R_WB = x.R_WB
+        v_W = x.v_W
+        w_B = x.w_B
+        omega_w = x.omega_W
+
+        delta_i = p.geom.ackermann_front_angles(u.delta)
+        r_B = p.geom.wheel_contact_points_body()
+
+        c = jnp.cos(delta_i)
+        s = jnp.sin(delta_i)
+        t_B = jnp.stack([c,s, jnp.zeros_like(c)],axis=-1)
+        n_B = jnp.stack([-s,c, jnp.zeros_like(c)],axis=-1)
+
+        R = R_WB.as_matrix()
+        t_W = (R @ t_B.T).T
+        n_W = (R @ n_B.T).T
+        z_W = jnp.array([0.0,0.0,1.0],dtype=jnp.float32)
+
+        p_i_W = p_W[None,:] + (R @ r_B.T).T
+
+        w_cross_r_B = jnp.cross(w_B[None,:],r_B)
+        v_i_W = v_W[None,:] + (R @ w_cross_r_B.T).T # transposrt equation
+
+        Fz = self._normal_forces(p_i_W,v_i_W)
+
+        v_t = jnp.sum(t_W * v_i_W, axis=-1)
+        v_n = jnp.sum(n_W * v_i_W, axis=-1)
+        kappa, alpha = self._slip(omega_w, v_t, v_n)
+
+        Fx, Fy = self._tire_forces(kappa, alpha, Fz)
+
+        f_i_W = Fx[:,None] * t_W + Fy[:,None] * n_W + Fz[:,None] * z_W[None,:]
+        F_W = jnp.sum(f_i_W, axis=0)
+
+        r_i_W = p_i_W - p_W[None,:]
+        tau_W = jnp.sum(jnp.cross(r_i_W, f_i_W), axis=0)
+        tau_B = R.T @ tau_W
+
+        tau_cmd = p.motor.mask() * u.tau_w
+        domega_w = (tau_cmd - p.geom.wheel_radius * Fx - p.wheels.b_w * omega_w) / p.wheels.I_w
+
+        g_W = jnp.array([0.0, 0.0, -p.chassis.g],dtype=jnp.float32)
+        dv_W = (F_W / p.chassis.mass) + g_W
+
+
+        I_b = p.chassis.I_body
+        Iw = I_b @ w_B
+        dW_B = jnp.linalg.solve(I_b,(tau_B-jnp.cross(w_B,Iw)))
+
+        dp_W = v_W
+
+        # Tangent for SO3 is handled in integrator via w_B; derivative R is placeholder.
+        xdot_state = AckermannCarState(
+            p_W=dp_W,
+            R_WB=jaxlie.SO3.identity(),
+            v_W=dv_W,
+            w_B=dW_B,
+            omega_W=domega_w
+        )
+
+        return xdot_state, v_t, kappa, Fx, tau_cmd
+
+
     def _integrate_euler(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
         p_W_next = x.p_W + dt * xdot.p_W
         v_W_next = x.v_W + dt * xdot.v_W
@@ -335,13 +450,25 @@ class AckermannCarModel:
             omega_W = omega_w_next
         )
 
-    def _integrate_semi_implicit(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
+    def _integrate_semi_implicit(
+        self, 
+        x: AckermannCarState, 
+        xdot: AckermannCarState, 
+        dt: float,
+        v_t=None,
+        kappa=None,
+        Fx=None,
+        tau_cmd=None
+    ) -> AckermannCarState:
         v_W_next = x.v_W + dt * xdot.v_W
         w_B_next = x.w_B + dt * xdot.w_B
-        omega_w_next = x.omega_W + dt * xdot.omega_W
-
         p_W_next = x.p_W + dt * v_W_next
         R_next = x.R_WB @ jaxlie.SO3.exp(w_B_next * dt)
+
+        if v_t is not None:
+            omega_w_next = self._integrate_semi_implicit_wheel(x, xdot, dt, v_t, kappa, Fx, tau_cmd)
+        else:
+            omega_w_next = x.omega_W + dt * xdot.omega_W
 
         return AckermannCarState(
             p_W=p_W_next,
