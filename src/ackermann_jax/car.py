@@ -153,8 +153,8 @@ class AckermannCarModel:
             xdot = self.xdot(x,u)
             return self._integrate_euler(x,xdot,dt)
         if method == "semi_implicit_euler":
-            xdot, v_t, kappa, Fx, tau_cmd = self._xdot_with_intermediates(x,u)
-            return self._integrate_semi_implicit(x, xdot, dt, v_t, kappa, Fx, tau_cmd)
+            xdot, v_t, kappa, Fx, Fz, tau_cmd = self._xdot_with_intermediates(x,u)
+            return self._integrate_semi_implicit(x, xdot, dt, v_t, kappa, Fx, Fz, tau_cmd)
             # xdot = self.xdot(x,u)
             # return self._integrate_semi_implicit(x,xdot,dt)
         raise ValueError(f"Unknown integration method {method}")
@@ -329,36 +329,58 @@ class AckermannCarModel:
         v_t: Array,
         kappa: Array,
         Fx: Array,
+        Fz: Array,
         tau_cmd: Array,
+        k_passive: float = 200.0,
+        C_roll: float = 0.015
     ) -> Array:
         """
-        Analytically-stable implicit step for wheel speeds only.
+        Analytically-stable implicit step for wheel speeds.
+        Driven wheels (rear): exact solution of the linearised slip ODE.
+        Linearises Fx(omega) around current op-point, giving:
+                omega_next = omega_inf + (omega_k - omega_inf) * exp(-lambda * dt)
 
-        Linearises Fx(omega) around the current operating point:
-            Fx(omega) ≈ Fx_k + (dFx/domega) * (omega - omega_k)
-        giving a scalar linear ODE per wheel, solved exactly:
-        omega_next = omega_inf + (omega_k - omega_inf) * exp(-lambda * dt)
+        Undriven wheels (front): passive rolling constraint toward v_t/r_w,
+            with rolling resistance as the only longitudinal force.
+            Same exact-solution form, different lambda and omega_inf:
+                lambda_front    = b_w/I_w + k_passive
+                omega_inf_front = (k_passive * I_w * omega_roll - r_w * Fx_roll)
+                                / (b_w + k_passive * I_w)
 
-        Unconditionally stable for all dt, eps_v, and C_kappa.
+        Both are unconditionally stable for all dt > 0 and k_passive >= 0.
         """
         p = self.params
         rw = p.geom.wheel_radius
+        b_w = p.wheels.b_w
+        I_w = p.wheels.I_w
+
+        motor = p.motor.mask()
+        undriven = 1.0 - motor
+
+        # Rear wheels existing slip derivation
 
         kappa_max = 2.0
         eps_v = p.tires.eps_v
-        denom_vt = jnp.sqrt(v_t * v_t + eps_v * eps_v)
-        dkappa_raw_domega = rw / denom_vt
+
+        denom_vt = jnp.sqrt(v_t**2 + eps_v**2)
         kappa_raw = (rw * x.omega_W - v_t) / denom_vt
-        sech2 = 1.0 - jnp.tanh(kappa_raw / kappa_max)**2
-        dkappa_domega = dkappa_raw_domega * sech2
-
+        sech2 = 1.0 - jnp.tanh(kappa_raw / kappa_max) **2
+        dkappa_domega = (rw / denom_vt) * sech2
         dFx_domega = p.tires.C_kappa * dkappa_domega
-        lam = (p.wheels.b_w + rw * dFx_domega) / p.wheels.I_w
 
-        numerator = tau_cmd - rw * (Fx - dFx_domega * x.omega_W)
-        denom = p.wheels.b_w + rw * dFx_domega
-        omega_inf = numerator / denom
-        
+        lam_rear = (b_w + rw * dFx_domega) / I_w
+        omega_inf_rear = (tau_cmd - rw * (Fx - dFx_domega * x.omega_W))/(b_w + rw * dFx_domega)
+
+        # Undriven front wheels: passive rolling constraint 
+        Fx_roll = -C_roll * Fz * jnp.sign(v_t + 1e-9)
+        omega_roll = v_t / rw
+
+        lam_front = b_w / I_w + k_passive
+        omega_inf_front = (k_passive * I_w * omega_roll - rw * Fx_roll) / (b_w + k_passive * I_w)
+
+        lam = motor * lam_rear + undriven * lam_front
+        omega_inf = motor * omega_inf_rear + undriven * omega_inf_front
+
         decay = jnp.exp(-lam * dt)
         omega_w_next = omega_inf + (x.omega_W - omega_inf) * decay
 
@@ -430,7 +452,7 @@ class AckermannCarModel:
             omega_W=domega_w
         )
 
-        return xdot_state, v_t, kappa, Fx, tau_cmd
+        return xdot_state, v_t, kappa, Fx, Fz, tau_cmd
 
 
     def _integrate_euler(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
@@ -458,6 +480,7 @@ class AckermannCarModel:
         v_t=None,
         kappa=None,
         Fx=None,
+        Fz=None,
         tau_cmd=None
     ) -> AckermannCarState:
         v_W_next = x.v_W + dt * xdot.v_W
@@ -466,7 +489,8 @@ class AckermannCarModel:
         R_next = x.R_WB @ jaxlie.SO3.exp(w_B_next * dt)
 
         if v_t is not None:
-            omega_w_next = self._integrate_semi_implicit_wheel(x, xdot, dt, v_t, kappa, Fx, tau_cmd)
+            omega_w_next = self._integrate_semi_implicit_wheel(x, xdot, dt, v_t, kappa, Fx, Fz, tau_cmd,
+                            k_passive=200.0, C_roll=0.015)
         else:
             omega_w_next = x.omega_W + dt * xdot.omega_W
 
