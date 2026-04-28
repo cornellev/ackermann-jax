@@ -59,8 +59,10 @@ from ackermann_jax import ( #noqa
 # Edit these to change the search space.
 # WARNING: total combos = product of all lengths. Keep grids coarse first.
 
-K_N_VALUES      = [500.,  1000., 1500., 2000., 3000.]   # N/m
-C_N_VALUES      = [30.,   60.,   100.,  150.,  250.]     # N·s/m
+# K_N_VALUES      = [500.,  1000., 1500., 2000., 3000.]   # N/m
+K_N_VALUES = [1500.]
+# C_N_VALUES      = [30.,   60.,   100.,  150.,  250.]     # N·s/m
+C_N_VALUES = [50.]
 IW_FAC_VALUES   = [1.,    2.,    5.,    10.]             # inertia scale factor
 TAU_SPIN_VALUES = [0.05,  0.1,   0.2,   0.3]            # wheel settle time [s]
 C_KAPPA_VALUES  = [5.,    10.,   20.,   30.]             # longitudinal tire stiffness
@@ -77,7 +79,7 @@ V_CMD     = 1.0
 Z0        = 0.08      # initial height [m]
 
 # Scoring weights — [bounce, settle_vz, pitch_osc, roll_osc, omega_rough, z_drift, slip_cycling]
-WEIGHTS = np.array([3.0, 1.5, 2.0, 2.0, 4.0, 2.0, 3.0])
+WEIGHTS = np.array([3.0, 1.5, 4.0, 4.0, 6.0, 2.0, 1.0])
 
 METRIC_NAMES = [
     "bounce [m]",
@@ -128,7 +130,9 @@ def simulate_one(k_n, c_n, I_w_fac, tau_spin, c_kappa, c_alpha):
     x0 = default_state(z0=Z0)
 
     # ── Custom xdot that uses swept contact / wheel params ────────────────────
-    def xdot_patched(x: AckermannCarState, u: AckermannCarInput) -> AckermannCarState:
+    def xdot_patched(x: AckermannCarState, u: AckermannCarInput):
+        """Returns (xdot, v_t, kappa, Fx, tau_cmd) — intermediates needed for
+        the exact semi-implicit wheel integration."""
         p_W   = x.p_W
         R_WB  = x.R_WB
         v_W   = x.v_W
@@ -175,6 +179,8 @@ def simulate_one(k_n, c_n, I_w_fac, tau_spin, c_kappa, c_alpha):
         Fx = scale * Fx_star
         Fy = scale * Fy_star
 
+        Fx *= jnp.array([0.0, 0.0, 1.0, 1.0])
+
         f_i_W = Fx[:, None] * t_W + Fy[:, None] * n_W + Fz[:, None] * z_W[None, :]
         F_W   = jnp.sum(f_i_W, axis=0)
 
@@ -194,24 +200,43 @@ def simulate_one(k_n, c_n, I_w_fac, tau_spin, c_kappa, c_alpha):
         dp_W = v_W
 
         import jaxlie as _jaxlie
-        return AckermannCarState(
+        xdot_state = AckermannCarState(
             p_W=dp_W,
             R_WB=_jaxlie.SO3.identity(),
             v_W=dv_W,
             w_B=dW_B,
             omega_W=domega_w,
         )
+        return xdot_state, v_t, kappa, Fx, tau_cmd
 
     def step_patched(x, u):
-        xdot = xdot_patched(x, u)
-        # semi-implicit Euler
-        v_W_next     = x.v_W     + DT * xdot.v_W
-        w_B_next     = x.w_B     + DT * xdot.w_B
-        omega_w_next = x.omega_W + DT * xdot.omega_W
-        p_W_next     = x.p_W     + DT * v_W_next
+        xdot, v_t, kappa, Fx, tau_cmd = xdot_patched(x, u)
+        Fx *= jnp.array([0.0, 0.0, 1.0, 1.0]) # only consider rear wheels
+
+        # Semi-implicit Euler for translational / rotational body states
+        v_W_next = x.v_W + DT * xdot.v_W
+        w_B_next = x.w_B + DT * xdot.w_B
+        p_W_next = x.p_W + DT * v_W_next
 
         import jaxlie as _jaxlie
         R_next = x.R_WB @ _jaxlie.SO3.exp(w_B_next * DT)
+
+        # Exact analytical integration for wheel speeds (unconditionally stable).
+        # Linearises Fx(omega) around the current op-point:
+        #   Fx(omega) ≈ Fx_k + dFx/domega * (omega - omega_k)
+        # giving a linear ODE whose solution is:
+        #   omega_next = omega_inf + (omega_k - omega_inf) * exp(-lambda * dt)
+        rw    = geom.wheel_radius
+        eps_v = tp.eps_v
+        denom_vt       = jnp.sqrt(v_t * v_t + eps_v * eps_v)
+        kappa_raw      = (rw * x.omega_W - v_t) / denom_vt
+        sech2          = 1.0 - jnp.tanh(kappa_raw / 2.0) ** 2
+        dkappa_domega  = (rw / denom_vt) * sech2
+        dFx_domega     = c_kappa * dkappa_domega
+        lam            = (b_w + rw * dFx_domega) / I_w
+        omega_inf      = (tau_cmd - rw * (Fx - dFx_domega * x.omega_W)) / (b_w + rw * dFx_domega)
+        omega_w_next   = omega_inf + (x.omega_W - omega_inf) * jnp.exp(-lam * DT)
+
         return AckermannCarState(
             p_W=p_W_next, R_WB=R_next,
             v_W=v_W_next, w_B=w_B_next, omega_W=omega_w_next,
@@ -232,8 +257,12 @@ def simulate_one(k_n, c_n, I_w_fac, tau_spin, c_kappa, c_alpha):
         tau_w, integ_v = _BASE_MODEL.map_velocity_to_wheel_torques(
             x=x, v_cmd=v_ref, integral_state=integ_v,
             dt=DT, Kp=40., Ki=2., tau_max=0.35, integ_max=0.5,
-            use_traction_limit=True,
+            use_traction_limit=False, # use actual parameters and not what is in the base model
         )
+        Fz_approx = p.chassis.mass * p.chassis.g / 4.0
+        tau_fric = c_kappa * 1.0 * p.tires.mu * Fz_approx * geom.wheel_radius
+        tau_w = jnp.clip(tau_w, -tau_fric, tau_fric)
+
         delta, integ_s = _BASE_MODEL.map_heading_to_steering(
             x=x, psi_cmd=psi_cmd, integral_state=integ_s,
             dt=DT, Kp=3., Ki=2., Kd=0.4, delta_max=0.35, integ_max=0.5,
