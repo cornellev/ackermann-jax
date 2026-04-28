@@ -17,7 +17,7 @@ from .errorDyn import (
     zero_error_state
 )
 
-ERROR_DIM = 16
+ERROR_DIM = 12
 
 # Create state container to properly x and P
 @jax.tree_util.register_pytree_node_class

@@ -178,10 +178,10 @@ PERTURB_V = jnp.array([0.1, 0.0, 0.0], dtype=jnp.float32)  # +0.1 m/s in x
 
 x_pert_p = AckermannCarState(
     p_W=x_ref.p_W + PERTURB_P, R_WB=x_ref.R_WB,
-    v_W=x_ref.v_W, w_B=x_ref.w_B, omega_W=x_ref.omega_W)
+    v_W=x_ref.v_W, w_B=x_ref.w_B)
 x_pert_v = AckermannCarState(
     p_W=x_ref.p_W, R_WB=x_ref.R_WB,
-    v_W=x_ref.v_W + PERTURB_V, w_B=x_ref.w_B, omega_W=x_ref.omega_W)
+    v_W=x_ref.v_W + PERTURB_V, w_B=x_ref.w_B)
 
 dx_p = np.array(pack_error_state(state_difference(x_pert_p, x_ref)))
 dx_v = np.array(pack_error_state(state_difference(x_pert_v, x_ref)))
@@ -409,7 +409,7 @@ x_ref_w = ref_states[k_weave]
 x_pert  = AckermannCarState(
     p_W=x_ref_w.p_W + jnp.array([0.1, 0.0, 0.0], dtype=jnp.float32),
     R_WB=x_ref_w.R_WB, v_W=x_ref_w.v_W,
-    w_B=x_ref_w.w_B, omega_W=x_ref_w.omega_W)
+    w_B=x_ref_w.w_B)
 
 dx0_np = np.array(pack_error_state(state_difference(x_pert, x_ref_w)), dtype=np.float64)
 

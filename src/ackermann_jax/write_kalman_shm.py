@@ -1,7 +1,12 @@
 import struct
 from multiprocessing import shared_memory, resource_tracker
 
+import jax.numpy as jnp
+
 from ackermann_jax.ekf import EKFState
+
+# wheel_radius matches default_params(); omega_w is now a derived quantity
+_WHEEL_RADIUS = 0.03  # [m]
 
 SHM_NAME = "kalman_shm"
 KALMAN_FMT = "<Q17f"
@@ -32,7 +37,13 @@ class KalmanShmWriter:
         wxyz = x.R_WB.wxyz
         v = x.v_W
         w = x.w_B
-        om = x.omega_W
+        # omega_w is no longer a state variable; derive from kinematic rolling.
+        # v_B[0] is the forward body-frame speed; ignores yaw-rate contribution
+        # and steering angle (good approximation for slow parking-lot driving).
+        R_mat = x.R_WB.as_matrix()
+        v_fwd = float((R_mat.T @ x.v_W)[0])
+        om_scalar = v_fwd / _WHEEL_RADIUS
+        om = [om_scalar, om_scalar, om_scalar, om_scalar]
 
         self._seq = (self._seq + 1) | 1
         struct.pack_into(SEQ_FMT, self.buf, 0, self._seq)

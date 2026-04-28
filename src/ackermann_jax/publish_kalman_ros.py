@@ -7,6 +7,9 @@ from builtin_interfaces.msg import Time
 
 from ackermann_jax.ekf import EKFState
 
+# omega_w is now derived under the kinematic rolling assumption
+_WHEEL_RADIUS = 0.03  # [m] — matches default_params()
+
 TOPIC_ODOM = "kalman/odom"
 TOPIC_WHEEL_SPEEDS = "kalman/wheel_speeds"
 FRAME_ID = "world"
@@ -36,7 +39,11 @@ class KalmanRosPublisher:
         wxyz = x.R_WB.wxyz  # jaxlie convention: (w, x, y, z)
         v = x.v_W
         w = x.w_B
-        om = x.omega_W
+        # omega_w is no longer a state variable; derive from kinematic rolling.
+        R_mat = x.R_WB.as_matrix()
+        v_fwd = float((R_mat.T @ x.v_W)[0])
+        om_scalar = v_fwd / _WHEEL_RADIUS
+        om = [om_scalar, om_scalar, om_scalar, om_scalar]
 
         stamp = Time()
         stamp.sec = int(timestamp) // 1_000_000_000

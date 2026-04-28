@@ -30,12 +30,12 @@ jax.config.update("jax_enable_x64", False)
 
 
 # Error-state index slices (must match pack/unpack_error_state ordering)
+# omega_W removed: kinematic rolling assumption (omega_w = v_t / r_wheel)
 _P_IDX = {
-    "p_W":    slice(0,  3),
-    "theta":  slice(3,  6),
-    "v_W":    slice(6,  9),
-    "w_B":    slice(9,  12),
-    "omega_W": slice(12, 16),
+    "p_W":   slice(0,  3),
+    "theta": slice(3,  6),
+    "v_W":   slice(6,  9),
+    "w_B":   slice(9,  12),
 }
 
 
@@ -163,8 +163,20 @@ def h_gyro(x: AckermannCarState) -> Array:
     return x.w_B
 
 
-def h_wheels(x: AckermannCarState) -> Array:
-    return x.omega_W
+def _make_h_wheels():
+    params = default_params()
+    r_B = params.geom.wheel_contact_points_body()
+    rw  = params.geom.wheel_radius
+    def h_wheels(x: AckermannCarState) -> Array:
+        R = x.R_WB.as_matrix()
+        ex_W = R[:, 0]
+        w_cross_r_B = jnp.cross(x.w_B[None, :], r_B)
+        v_i_W = x.v_W[None, :] + (R @ w_cross_r_B.T).T
+        v_t = jnp.sum(ex_W[None, :] * v_i_W, axis=-1)
+        return v_t / rw
+    return h_wheels
+
+h_wheels = _make_h_wheels()
 
 
 def make_h_gravity(g: float):
@@ -189,7 +201,8 @@ def generate_measurements(stateHist, g, R_gps, R_gyro, R_gravity, R_wheels, key)
     )(stateHist.R_WB.wxyz)
     z_gravity = z_gravity_true + jnp.sqrt(R_gravity) * jax.random.normal(k3, z_gravity_true.shape)
 
-    z_wheels = stateHist.omega_W + jnp.sqrt(R_wheels) * jax.random.normal(k4, stateHist.omega_W.shape)
+    omega_w_true = jax.vmap(h_wheels)(stateHist)
+    z_wheels = omega_w_true + jnp.sqrt(R_wheels) * jax.random.normal(k4, omega_w_true.shape)
 
     return z_gps, z_gyro, z_gravity, z_wheels
 
@@ -255,12 +268,13 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
     truth_p  = stateHist.p_W[start_idx:]
     truth_v  = stateHist.v_W[start_idx:]
     truth_w  = stateHist.w_B[start_idx:]
-    truth_om = stateHist.omega_W[start_idx:]
+    stateHist_run = jax.tree.map(lambda a: a[start_idx:], stateHist)
+    truth_om = jax.vmap(h_wheels)(stateHist_run)
 
     ekf_p  = ekf_hist.x_nom.p_W
     ekf_v  = ekf_hist.x_nom.v_W
     ekf_w  = ekf_hist.x_nom.w_B
-    ekf_om = ekf_hist.x_nom.omega_W
+    ekf_om = jax.vmap(h_wheels)(ekf_hist.x_nom)
 
     s     = meas_stride
     t_s   = t[::s]
@@ -347,7 +361,8 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
     fig.tight_layout()
 
     # ── Wheel speeds ───────────────────────────────────────────────────
-    sigma_om = _sigma_band(ekf_hist.P, _P_IDX["omega_W"])
+    _rw = default_params().geom.wheel_radius
+    sigma_om = _sigma_band(ekf_hist.P, _P_IDX["v_W"])[:, :1].repeat(4, axis=1) / _rw
     fig, axes = plt.subplots(4, 2, sharex="col", figsize=(14, 10))
     for i, name in enumerate(["FL", "FR", "RL", "RR"]):
         axes[i, 0].plot(t, truth_om[:, i], "k-", label="truth")

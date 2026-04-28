@@ -26,7 +26,6 @@ class AckermannCarErrorState:
     dtheta_B: Array
     dv_W: Array
     dw_B: Array
-    domega_W: Array
 
     def tree_flatten(self):
         children = (
@@ -34,14 +33,13 @@ class AckermannCarErrorState:
             self.dtheta_B,
             self.dv_W,
             self.dw_B,
-            self.domega_W
         )
         return children, None
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        dp_W, dtheta_B, dv_W, dw_B, domega_W = children
-        return cls(dp_W, dtheta_B, dv_W, dw_B, domega_W)
+        dp_W, dtheta_B, dv_W, dw_B = children
+        return cls(dp_W, dtheta_B, dv_W, dw_B)
 
 def zero_error_state() -> AckermannCarErrorState:
     return AckermannCarErrorState(
@@ -49,7 +47,6 @@ def zero_error_state() -> AckermannCarErrorState:
         dtheta_B = jnp.zeros((3,), dtype=jnp.float32),
         dv_W = jnp.zeros((3,), dtype=jnp.float32),
         dw_B = jnp.zeros((3,), dtype=jnp.float32),
-        domega_W = jnp.zeros((4,), dtype=jnp.float32)
     )
 
 def inject_error(
@@ -61,7 +58,6 @@ def inject_error(
         R_WB = inject_rotation_error(x.R_WB, dx.dtheta_B),
         v_W = x.v_W + dx.dv_W,
         w_B = x.w_B + dx.dw_B,
-        omega_W = x.omega_W + dx.domega_W
     )
 
 def state_difference(
@@ -73,7 +69,6 @@ def state_difference(
         dtheta_B = rotation_error(x_ref.R_WB, x.R_WB),
         dv_W = x.v_W - x_ref.v_W,
         dw_B = x.w_B - x_ref.w_B,
-        domega_W = x.omega_W - x_ref.omega_W
     )
 
 def pack_error_state(dx: AckermannCarErrorState) -> Array:
@@ -82,7 +77,6 @@ def pack_error_state(dx: AckermannCarErrorState) -> Array:
         dx.dtheta_B,
         dx.dv_W,
         dx.dw_B,
-        dx.domega_W
     ])
 
 def unpack_error_state(vec: Array) -> AckermannCarErrorState:
@@ -91,7 +85,6 @@ def unpack_error_state(vec: Array) -> AckermannCarErrorState:
         dtheta_B = vec[3:6],
         dv_W = vec[6:9],
         dw_B = vec[9:12],
-        domega_W = vec[12:16],
     )
 
 

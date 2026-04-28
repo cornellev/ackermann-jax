@@ -48,8 +48,20 @@ def h_gps(x: AckermannCarState):
 def h_gyro(x: AckermannCarState):
     return x.w_B
 
-def h_wheels(x: AckermannCarState):
-    return x.omega_W
+def _make_h_wheels():
+    params = default_params()
+    r_B = params.geom.wheel_contact_points_body()
+    rw  = params.geom.wheel_radius
+    def h_wheels(x: AckermannCarState):
+        R = x.R_WB.as_matrix()
+        ex_W = R[:, 0]
+        w_cross_r_B = jnp.cross(x.w_B[None, :], r_B)
+        v_i_W = x.v_W[None, :] + (R @ w_cross_r_B.T).T
+        v_t = jnp.sum(ex_W[None, :] * v_i_W, axis=-1)
+        return v_t / rw
+    return h_wheels
+
+h_wheels = _make_h_wheels()
 
 def make_h_gravity(g: float):
     g_up_W = jnp.array([0.0, 0.0, g], dtype=jnp.float32)
@@ -105,7 +117,7 @@ def build_ekf_state(model: AckermannCarModel) -> tuple:
         "gyro":    x.w_B    + jnp.sqrt(R_GYRO_SCALE)    * jax.random.normal(k2, x.w_B.shape),
         "gravity": x.R_WB.as_matrix().T @ jnp.array([0., 0., g], dtype=jnp.float32)
                             + jnp.sqrt(R_GRAVITY_SCALE)  * jax.random.normal(k3, (3,)),
-        "wheels":  x.omega_W + jnp.sqrt(R_WHEELS_SCALE) * jax.random.normal(k4, x.omega_W.shape),
+        "wheels":  h_wheels(x) + jnp.sqrt(R_WHEELS_SCALE) * jax.random.normal(k4, (4,)),
     }
 
     return ekf, u, meas
@@ -147,7 +159,7 @@ def main():
         "gps":     x0.p_W,
         "gyro":    x0.w_B,
         "gravity": x0.R_WB.as_matrix().T @ jnp.array([0., 0., g], dtype=jnp.float32),
-        "wheels":  x0.omega_W,
+        "wheels":  h_wheels(x0),
     }
     kwargs0 = dict(
         model=model, u=u0, meas=meas0,

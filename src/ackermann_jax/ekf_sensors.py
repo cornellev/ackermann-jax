@@ -37,8 +37,29 @@ def h_gps_2d(x):
     return x.p_W[:2]
 
 
-def h_wheels(x):
-    return x.omega_W
+def make_h_wheels(params):
+    """
+    Factory for the wheel-encoder measurement function under the kinematic
+    rolling assumption (omega_w = v_t / r_wheel).
+
+    Uses the zero-steer approximation for the tire tangent direction
+    (body x-axis for all four wheels), which is exact for the rear wheels
+    and a good approximation for small steering angles at the front.
+    This produces a JIT-stable closure — the same function object is returned
+    each call so ekf_update only compiles once.
+    """
+    r_B = params.geom.wheel_contact_points_body()
+    rw  = params.geom.wheel_radius
+
+    def h_wheels(x):
+        R = x.R_WB.as_matrix()
+        ex_W = R[:, 0]                                      # body-x in world (tire tangent, δ≈0)
+        w_cross_r_B = jnp.cross(x.w_B[None, :], r_B)      # (4, 3)
+        v_i_W = x.v_W[None, :] + (R @ w_cross_r_B.T).T    # (4, 3) contact-patch velocity
+        v_t = jnp.sum(ex_W[None, :] * v_i_W, axis=-1)     # (4,) tangential speed
+        return v_t / rw                                     # (4,) omega_w [rad/s]
+
+    return h_wheels
 
 
 def _latlon_to_local_xy(lat, lon, lat0, lon0):
@@ -58,8 +79,10 @@ def main() -> None:
 
     Q = _Q_SCALE * jnp.eye(ERROR_DIM)
     P0 = _P0_SCALE * jnp.eye(ERROR_DIM)
-    R_gps_mat = _R_GPS_VAL * jnp.eye(2)
+    R_gps_mat    = _R_GPS_VAL    * jnp.eye(2)
     R_wheels_mat = _R_WHEELS_VAL * jnp.eye(4)
+
+    h_wheels = make_h_wheels(params)
 
     _motor_mask = jnp.array([0.0, 0.0, 1.0, 1.0], dtype=jnp.float32)
 
@@ -109,7 +132,6 @@ def main() -> None:
                     R_WB=jaxlie.SO3.identity(),
                     v_W=jnp.zeros(3, dtype=jnp.float32),
                     w_B=jnp.zeros(3, dtype=jnp.float32),
-                    omega_W=omega_meas,
                 )
                 ekf = EKFState(x_nom=x0, P=P0)
                 prev_ts_s = ts_s

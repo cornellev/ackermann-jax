@@ -261,7 +261,6 @@ def run_mpc(
                 R_WB=x_next.R_WB,
                 v_W=x_next.v_W,
                 w_B=x_next.w_B,
-                omega_W=x_next.omega_W,
             )
 
         results.append(result)
@@ -445,10 +444,9 @@ def main():
 
     x_pert = AckermannCarState(
         p_W=ref_states[N_settle].p_W + jnp.array([0.0, 0.1, 0.0]),
-        R_WB = ref_states[N_settle].R_WB,
-        v_W = ref_states[N_settle].v_W,
-        w_B = ref_states[N_settle].w_B,
-        omega_W = ref_states[N_settle].omega_W,
+        R_WB=ref_states[N_settle].R_WB,
+        v_W=ref_states[N_settle].v_W,
+        w_B=ref_states[N_settle].w_B,
     )
     result_test, _ = mpc_step(model, _warmup_state, mpc_params, x_pert)
     print("du_opt[0] with perturbation:", result_test.du_opt[0])

@@ -2,12 +2,15 @@
 Tests that error_dynamics is differentiable w.r.t. the error state and
 physical parameters, as required for an EKF.
 
-State Jacobian (F):  d(error_dynamics)/d(dx_vex) at dx=0  →  (16, 16)
+State Jacobian (F):  d(error_dynamics)/d(dx_vex) at dx=0  →  (12, 12)
   - Used as the linearised state-transition matrix in the EKF predict step.
 
-Parameter Jacobian:  d(error_dynamics)/d(params_flat) at dx=0  →  (16, n_params)
+Parameter Jacobian:  d(error_dynamics)/d(params_flat) at dx=0  →  (12, n_params)
   - Needed when parameters are augmented into the EKF state for online
     estimation (e.g. estimating tire stiffness C_kappa / C_alpha).
+
+Note: omega_W was removed as a state variable (kinematic rolling assumption:
+omega_w = v_t / r_wheel). ERROR_DIM is now 12 = dp_W(3) + dtheta_B(3) + dv_W(3) + dw_B(3).
 """
 
 import numpy as np
@@ -30,8 +33,9 @@ from ackermann_jax import (
 DT = 0.01  # 10 ms timestep
 
 # ── Error state dimensionality ──────────────────────────────────────────────
-# dp_W(3) + dtheta_B(3) + dv_W(3) + dw_B(3) + domega_W(4) = 16
-ERROR_DIM = 16
+# dp_W(3) + dtheta_B(3) + dv_W(3) + dw_B(3) = 12
+# omega_W removed: kinematic rolling assumption (omega_w = v_t / r_wheel)
+ERROR_DIM = 12
 
 
 def make_running_state(v_x: float = 1.0) -> AckermannCarState:
@@ -56,7 +60,7 @@ def make_running_state(v_x: float = 1.0) -> AckermannCarState:
         R_WB=jaxlie.SO3.identity(),
         v_W=jnp.array([v_x, 0.0, 0.0], dtype=jnp.float32),
         w_B=jnp.zeros(3, dtype=jnp.float32),
-        omega_W=jnp.full(4, omega_roll, dtype=jnp.float32),
+        # omega_W removed: kinematic assumption omega_w = v_t/r (omega_roll = v_x/r)
     )
 
 

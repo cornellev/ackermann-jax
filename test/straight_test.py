@@ -77,7 +77,7 @@ def main():
         v = x_next.v_W
         Fx = debug.Fx
         Fz = debug.Fz
-        omega = x.omega_W
+        omega = debug.v_t / params.geom.wheel_radius  # kinematic omega_w = v_t/r
         kappa = debug.kappa
 
         # compute velocity in two different ways

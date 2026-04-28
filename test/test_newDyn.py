@@ -40,11 +40,11 @@ print(f"Error: {dtheta - dtheta_est}")
 x = default_state()
 
 dx = AckermannCarErrorState(
-    dp_W = jnp.array([0.1, -0.2, 0.05]),
+    dp_W    = jnp.array([0.1, -0.2, 0.05]),
     dtheta_B = jnp.array([0.01, -0.02, 0.005]),
-    dv_W = jnp.array([0.2, 0.0, -0.1]),
-    dw_B = jnp.array([0.01, 0.02, -0.01]),
-    domega_W = jnp.array([0.1,0.1,0.05,-0.02])
+    dv_W    = jnp.array([0.2, 0.0, -0.1]),
+    dw_B    = jnp.array([0.01, 0.02, -0.01]),
+    # domega_W removed: kinematic rolling assumption (omega_w = v_t / r_wheel)
 )
 
 # inject and recover

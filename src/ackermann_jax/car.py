@@ -31,7 +31,6 @@ class AckermannCarState:
     R_WB: jaxlie.SO3 # rotation from body to world frame
     v_W: Array # linear velocity of the car in world frame
     w_B: Array # angular velocity of the car in body frame
-    omega_W: Array # (4,) angular velocity of the wheels in world frame
 
     def tree_flatten(self):
         children = (
@@ -39,14 +38,13 @@ class AckermannCarState:
             self.R_WB,
             self.v_W,
             self.w_B,
-            self.omega_W
         )
         return children, None
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        p_W,R_WB,v_W,w_B,omega_W = children
-        return cls(p_W,R_WB,v_W,w_B,omega_W)
+        p_W,R_WB,v_W,w_B = children
+        return cls(p_W,R_WB,v_W,w_B)
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -85,7 +83,6 @@ class AckermannCarModel:
         R_WB = x.R_WB
         v_W = x.v_W
         w_B = x.w_B
-        omega_w = x.omega_W
 
         delta_i = p.geom.ackermann_front_angles(u.delta)
         r_B = p.geom.wheel_contact_points_body()
@@ -109,9 +106,14 @@ class AckermannCarModel:
 
         v_t = jnp.sum(t_W * v_i_W, axis=-1)
         v_n = jnp.sum(n_W * v_i_W, axis=-1)
-        kappa, alpha = self._slip(omega_w, v_t, v_n)
+        # Kinematic rolling assumption: omega_w = v_t / r (no wheel spin state).
+        # Under this assumption kappa ≡ 0, so we derive longitudinal force
+        # directly from the applied wheel torque instead of from slip ratio.
+        omega_w = v_t / p.geom.wheel_radius
+        _, alpha = self._slip(omega_w, v_t, v_n)  # kappa ≡ 0; only alpha matters
 
-        Fx, Fy = self._tire_forces(kappa, alpha, Fz)
+        Fx_star = u.tau_w / p.geom.wheel_radius   # torque → longitudinal force
+        Fx, Fy = self._tire_forces(Fx_star, alpha, Fz)
 
         f_i_W = Fx[:,None] * t_W + Fy[:,None] * n_W + Fz[:,None] * z_W[None,:]
         F_W = jnp.sum(f_i_W, axis=0)
@@ -119,9 +121,6 @@ class AckermannCarModel:
         r_i_W = p_i_W - p_W[None,:]
         tau_W = jnp.sum(jnp.cross(r_i_W, f_i_W), axis=0)
         tau_B = R.T @ tau_W
-
-        tau_cmd = p.motor.mask() * u.tau_w
-        domega_w = (tau_cmd - p.geom.wheel_radius * Fx - p.wheels.b_w * omega_w) / p.wheels.I_w
 
         g_W = jnp.array([0.0, 0.0, -p.chassis.g],dtype=jnp.float32)
         dv_W = (F_W / p.chassis.mass) + g_W
@@ -139,7 +138,6 @@ class AckermannCarModel:
             R_WB=jaxlie.SO3.identity(),
             v_W=dv_W,
             w_B=dW_B,
-            omega_W=domega_w
         )
 
     def step(
@@ -303,11 +301,16 @@ class AckermannCarModel:
         alpha = 0.5 * jnp.tanh(alpha / 0.5)
         return kappa, alpha
 
-    def _tire_forces(self, kappa: Array, alpha: Array, Fz: Array) -> Tuple[Array,Array]:
+    def _tire_forces(self, Fx_star: Array, alpha: Array, Fz: Array) -> Tuple[Array,Array]:
+        """
+        Combined-slip tire force model with friction-circle saturation.
+
+        Fx_star: (4,) commanded longitudinal force per wheel (tau_w / r_wheel)
+        alpha:   (4,) slip angle [rad]
+        Fz:      (4,) normal force [N]
+        """
         tp = self.params.tires
-        Fx_star = tp.C_kappa * kappa
         Fy_star = -tp.C_alpha * alpha
-        # Fx_star = 0
 
         Fmax = tp.mu * Fz
         mag = jnp.sqrt(Fx_star * Fx_star + Fy_star * Fy_star + tp.eps_force)
@@ -321,7 +324,6 @@ class AckermannCarModel:
         p_W_next = x.p_W + dt * xdot.p_W
         v_W_next = x.v_W + dt * xdot.v_W
         w_B_next = x.w_B + dt * xdot.w_B
-        omega_w_next = x.omega_W + dt * xdot.omega_W
 
         # SO3 integration
         R_next = x.R_WB @ jaxlie.SO3.exp(w_B_next * dt)
@@ -329,15 +331,13 @@ class AckermannCarModel:
         return AckermannCarState(
             p_W=p_W_next,
             R_WB=R_next,
-            v_W = v_W_next,
-            w_B = w_B_next,
-            omega_W = omega_w_next
+            v_W=v_W_next,
+            w_B=w_B_next,
         )
 
     def _integrate_semi_implicit(self, x: AckermannCarState, xdot: AckermannCarState, dt: float) -> AckermannCarState:
         v_W_next = x.v_W + dt * xdot.v_W
         w_B_next = x.w_B + dt * xdot.w_B
-        omega_w_next = x.omega_W + dt * xdot.omega_W
 
         p_W_next = x.p_W + dt * v_W_next
         R_next = x.R_WB @ jaxlie.SO3.exp(w_B_next * dt)
@@ -347,7 +347,6 @@ class AckermannCarModel:
             R_WB=R_next,
             v_W=v_W_next,
             w_B=w_B_next,
-            omega_W=omega_w_next
         )
 
     def diagnostics(
@@ -356,7 +355,7 @@ class AckermannCarModel:
         u: AckermannCarInput
     ) -> Diagnostics:
         p = self.params
-        p_W, R_WB, v_W, w_B, omega_w = x.p_W, x.R_WB, x.v_W, x.w_B, x.omega_W
+        p_W, R_WB, v_W, w_B = x.p_W, x.R_WB, x.v_W, x.w_B
         R = R_WB.as_matrix()
 
         delta_i = p.geom.ackermann_front_angles(u.delta)
@@ -379,8 +378,10 @@ class AckermannCarModel:
         Fz = self._normal_forces(p_i_W,v_i_W)
         v_t = jnp.sum(t_W * v_i_W, axis=-1)
         v_n = jnp.sum(n_W * v_i_W, axis=-1)
-        kappa, alpha = self._slip(omega_w, v_t, v_n)
-        Fx, Fy = self._tire_forces(kappa, alpha, Fz)
+        omega_w = v_t / p.geom.wheel_radius
+        kappa, alpha = self._slip(omega_w, v_t, v_n)  # kappa ≡ 0; kept for display
+        Fx_star = u.tau_w / p.geom.wheel_radius
+        Fx, Fy = self._tire_forces(Fx_star, alpha, Fz)
 
         f_i_W = Fx[:,None] * t_W + Fy[:,None] * n_W + Fz[:,None] * z_W[None,:]
         F_W = jnp.sum(f_i_W, axis=0)
@@ -456,14 +457,12 @@ def default_state(z0: float = 0.08) -> AckermannCarState:
     R_WB = jaxlie.SO3.identity()
     v_W = jnp.zeros((3,), dtype=jnp.float32)
     w_B = jnp.zeros((3,), dtype=jnp.float32)
-    omega_W = jnp.zeros((4,), dtype=jnp.float32)
 
     return AckermannCarState(
         p_W=p_W,
         R_WB=R_WB,
         v_W=v_W,
         w_B=w_B,
-        omega_W=omega_W
     )
 
 def pack_input(delta: float, tau_w: Array) -> AckermannCarInput:
