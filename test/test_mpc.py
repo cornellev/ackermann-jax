@@ -61,6 +61,7 @@ from ackermann_jax.mpc import (
     MPCResult,
     MPCState,
     default_mpc_params,
+    init_mpc_state,
     mpc_step,
     _compute_FG,
     _build_prediction_matrices_np
@@ -223,9 +224,10 @@ def run_mpc(
     n_steps = len(ref_inputs) - start_idx - N   # steps where full window exists
 
     x_true = ref_states[start_idx]
-    mpc_state = MPCState(
-        x_ref=ref_states[start_idx : start_idx + N + 1],
-        u_ref=ref_inputs[start_idx : start_idx + N],
+    mpc_state = init_mpc_state(
+        ref_states[start_idx : start_idx + N + 1],
+        ref_inputs[start_idx : start_idx + N],
+        params,
     )
 
     results: List[MPCResult]          = []
@@ -241,6 +243,7 @@ def run_mpc(
             x_ref=ref_states[k : k + N + 1],
             u_ref=ref_inputs[k : k + N],
             u_warm=mpc_state.u_warm,
+            solver=mpc_state.solver,
         )
 
         result, mpc_state = mpc_step(model, mpc_state, params, x_true)
@@ -435,9 +438,10 @@ def main():
     # ── Step 3: Warm-up / JIT compilation (first call) ────────────────────────
     print("\nWarm-up MPC step (JIT compile) …", flush=True)
     t0 = time.perf_counter()
-    _warmup_state = MPCState(
-        x_ref=ref_states[N_settle : N_settle + N_horizon + 1],
-        u_ref=ref_inputs[N_settle : N_settle + N_horizon],
+    _warmup_state = init_mpc_state(
+        ref_states[N_settle : N_settle + N_horizon + 1],
+        ref_inputs[N_settle : N_settle + N_horizon],
+        mpc_params,
     )
     _, _ = mpc_step(model, _warmup_state, mpc_params, ref_states[N_settle])
     jax.block_until_ready(None)

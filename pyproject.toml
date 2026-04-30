@@ -45,6 +45,7 @@ pyqt = ">=5.15.11,<6"
 ros-humble-rclpy = "*"
 ros-humble-nav-msgs = "*"
 osqp = ">=1.1.1,<2"
+jaxopt = ">=0.8.4,<0.9"
 
 [tool.pixi.pypi-dependencies]
 ackermann-jax = {path = "./", editable = true}

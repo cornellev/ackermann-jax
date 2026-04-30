@@ -34,8 +34,10 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import Array
+from jaxopt import OSQP
 import numpy as np
 import scipy.linalg as sla
 
@@ -125,9 +127,9 @@ def _compute_FG(
 
 
 def _build_prediction_matrices_np(
-    Fs: np.ndarray,   # (N, nx, nx) float64
-    Gs: np.ndarray,   # (N, nx, nu) float64
-) -> Tuple[np.ndarray, np.ndarray]:
+    Fs: jnp.ndarray,   # (N, nx, nx) float64
+    Gs: jnp.ndarray,   # (N, nx, nu) float64
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Build Φ and Θ entirely in float64 numpy.
 
@@ -149,20 +151,20 @@ def _build_prediction_matrices_np(
     nu = Gs.shape[2]
 
     # Phi
-    Phi = np.zeros((N * nx, nx), dtype=np.float64)
-    F_prod = np.eye(nx, dtype=np.float64)
+    Phi = jnp.zeros((N * nx, nx), dtype=np.float64)
+    F_prod = jnp.eye(nx, dtype=np.float64)
     for k in range(N):
         F_prod = Fs[k] @ F_prod
-        Phi[k * nx:(k + 1) * nx] = F_prod
+        Phi = Phi.at[k * nx:(k + 1) * nx].set(F_prod)
 
     # Theta  (block-lower-triangular)
-    Theta = np.zeros((N * nx, N * nu), dtype=np.float64)
+    Theta = jnp.zeros((N * nx, N * nu), dtype=np.float64)
     for j in range(N):
         col = Gs[j].copy()                                  # (nx, nu)
-        Theta[j * nx:(j + 1) * nx, j * nu:(j + 1) * nu] = col
+        Theta = Theta.at[j * nx:(j + 1) * nx, j * nu:(j + 1) * nu].set(col)
         for i in range(j + 1, N):
             col = Fs[i] @ col
-            Theta[i * nx:(i + 1) * nx, j * nu:(j + 1) * nu] = col
+            Theta = Theta.at[i * nx:(i + 1) * nx, j * nu:(j + 1) * nu].set(col)
 
     return Phi, Theta
 
@@ -270,6 +272,23 @@ class MPCState:
     x_ref:  List[AckermannCarState]   # length N+1  — nominal states
     u_ref:  List[AckermannCarInput]   # length N    — nominal inputs
     u_warm: Optional[Array] = None    # (N·INPUT_DIM,) QP warm-start
+    solver: Optional[OSQP] = None
+
+def init_mpc_state(x_ref, u_ref, params: MPCParams) -> MPCState:
+    N = params.N
+    nu = INPUT_DIM
+    n_constr = 0
+    if params.u_min is not None or params.u_max is not None:
+        n_constr += N * nu
+    if params.du_max is not None:
+        n_constr += N * nu
+    solver = create_osqp_solver()
+    return MPCState(
+        x_ref=x_ref,
+        u_ref=u_ref,
+        u_warm=None,
+        solver=solver,
+    )      
 
 # ---------------------------------------------------------------------------
 # Output
@@ -332,7 +351,7 @@ def _build_qp(
         )
         hi = jnp.tile(
             params.u_max if params.u_max is not None
-            else jnp.full((nu),jnp.inf, dtype=jnp.float32),
+            else jnp.full((nu,),jnp.inf, dtype=jnp.float32),
             N,
         )
         l_list.append(lo - u_nom_flat)
@@ -359,53 +378,78 @@ def _build_qp(
 
 # Solvers
 def _solve_unconstrained(
-    P_np: np.ndarray,
-    q_np: np.ndarray
-) -> np.ndarray:
+    P_np: jnp.ndarray,
+    q_np: jnp.ndarray
+) -> jnp.ndarray:
     """
     Analytic unconstrained minimum.
  
     From  J = ½ U'P U + q'U  →  ∂J/∂U = PU + q = 0  →  U* = −P⁻¹q
     where P = 2H (so ½ P = H, and the solve is equivalent to U* = −H⁻¹f).
     """
-    return np.linalg.solve(P_np, -q_np)
+    return jnp.linalg.solve(P_np, -q_np)
 
-def _solve_osqp(
-    P_np: np.ndarray,
-    q_np: np.ndarray,
-    A_np: np.ndarray,
-    l_np: np.ndarray,
-    u_np: np.ndarray,
-    warm: Optional[np.ndarray]
-) -> Tuple[np.ndarray, bool]:
-    """
-    Solve the constrained QP with OSQP.
-    """
-    try:
-        import osqp
-        import scipy.sparse as sp
-    except ImportError:
-        return _solve_unconstrained(P_np, q_np), False
+# def _solve_osqp(
+#     P_np: jnp.ndarray,
+#     q_np: jnp.ndarray,
+#     A_np: jnp.ndarray,
+#     l_np: jnp.ndarray,
+#     u_np: jnp.ndarray,
+#     warm: Optional[jnp.ndarray]
+# ) -> Tuple[jnp.ndarray, bool]:
+#     """
+#     Solve the constrained QP with OSQP.
+#     """
+#     try:
+#         import osqp
+#         import scipy.sparse as sp
+#     except ImportError:
+#         return _solve_unconstrained(P_np, q_np), False
+    
+#     P_np = np.asarray(P_np, dtype=np.float64)
+#     q_np = np.asarray(q_np, dtype=np.float64)
+#     A_np = np.asarray(A_np, dtype=np.float64)
+#     l_np = np.asarray(l_np, dtype=np.float64)
+#     u_np = np.asarray(u_np, dtype=np.float64)
 
-    prob = osqp.OSQP()
-    prob.setup(
-        sp.csc_matrix(P_np),
-        q_np,
-        sp.csc_matrix(A_np),
-        l_np, u_np,
-        warm_starting=True,
+#     prob = osqp.OSQP()
+#     prob.setup(
+#         sp.csc_matrix(P_np),
+#         q_np,
+#         sp.csc_matrix(A_np),
+#         l_np, u_np,
+#         warm_starting=True,
+#         verbose=False,
+#         eps_abs=1e-4,
+#         eps_rel=1e-4,
+#         max_iter=2000,
+#     )
+#     if warm is not None:
+#         prob.warm_start(x=warm)
+#     res = prob.solve()
+#     ok = res.info.status in ("solved","solved_inaccurate")
+#     if not ok:
+#         return _solve_unconstrained(P_np, q_np), False
+#     return res.x, True
+
+def create_osqp_solver():
+    return OSQP(
+        maxiter=2000,
+        tol=1e-4,
         verbose=False,
-        eps_abs=1e-4,
-        eps_rel=1e-4,
-        max_iter=2000,
     )
-    if warm is not None:
-        prob.warm_start(x=warm)
-    res = prob.solve()
-    ok = res.info.status in ("solved","solved_inaccurate")
-    if not ok:
-        return _solve_unconstrained(P_np, q_np), False
-    return res.x, True
+
+def block_diag_jax(mats):
+    sizes = [m.shape[0] for m in mats]
+    total = sum(sizes)
+    out = jnp.zeros((total, total), dtype=mats[0].dtype)
+
+    i = 0
+    for m in mats:
+        s = m.shape[0]
+        out = out.at[i:i+s, i:i+s].set(m)
+        i += s
+    return out
 
 def mpc_step(
     model: AckermannCarModel,
@@ -441,6 +485,8 @@ def mpc_step(
     nx = ERROR_DIM
     nu = INPUT_DIM
 
+    solver = mpc_state.solver
+
     # ── 1. Initial error state ──────────────────────────────────────────────
     dx0 = pack_error_state(state_difference(mpc_state.x_ref[0], x_current))
 
@@ -455,71 +501,101 @@ def mpc_step(
     # Using float64 because the stiff modes of this model have |λ| >> 1
     # at dt = 50 ms (contact spring |λ|≈12.3, wheel speeds |λ|≈11.2, yaw
     # rate |λ|≈5.1).  In float32 Phi = F^N overflows completely for N ≥ 10.
-    Fs_np  = np.stack([np.array(F, dtype=np.float64) for F in Fs_jax])
-    Gs_np  = np.stack([np.array(G, dtype=np.float64) for G in Gs_jax])
-    dx0_np = np.array(dx0, dtype=np.float64)
+    Fs_np  = jnp.stack([jnp.array(F, dtype=jnp.float64) for F in Fs_jax])
+    Gs_np  = jnp.stack([jnp.array(G, dtype=jnp.float64) for G in Gs_jax])
+    dx0_np = jnp.array(dx0, dtype=jnp.float64)
 
     Phi_np, Theta_np = _build_prediction_matrices_np(Fs_np, Gs_np)
 
     # ── 4. Cost matrices in float64 ─────────────────────────────────────────
-    Q_np  = np.array(params.Q,  dtype=np.float64)
-    Pf_np = np.array(params.Pf, dtype=np.float64)
-    R_np  = np.array(params.R,  dtype=np.float64)
-    Q_bar_np = sla.block_diag(*([Q_np] * (N - 1) + [Pf_np]))  # (N·nx, N·nx)
-    R_bar_np = sla.block_diag(*([R_np] * N))                    # (N·nu, N·nu)
+    Q_np  = jnp.array(params.Q,  dtype=jnp.float64)
+    Pf_np = jnp.array(params.Pf, dtype=jnp.float64)
+    R_np  = jnp.array(params.R,  dtype=jnp.float64)
+    # Q_bar_np = sla.block_diag(*([Q_np] * (N - 1) + [Pf_np]))  # (N·nx, N·nx)
+    # R_bar_np = sla.block_diag(*([R_np] * N))                    # (N·nu, N·nu)
+    Q_bar_np = block_diag_jax([Q_np]*(N-1) + [Pf_np])
+    R_bar_np = block_diag_jax([R_np]*N)
 
     # ── 5. Assemble QP in float64 (OSQP: min ½ U'PU + q'U) ─────────────────
     TtQ   = Theta_np.T @ Q_bar_np                               # (N·nu, N·nx)
     H_np  = TtQ @ Theta_np + R_bar_np                           # (N·nu, N·nu)
     f_np  = TtQ @ (Phi_np @ dx0_np)                             # (N·nu,)
     # Symmetrise + small Tikhonov regularisation for ill-conditioned H
-    P_np  = H_np + H_np.T + 1e-8 * np.eye(N * nu, dtype=np.float64)
+    P_np  = H_np + H_np.T + 1e-8 * jnp.eye(N * nu, dtype=jnp.float64)
     q_np  = 2.0 * f_np
 
     # ── 6. Constraint matrices ───────────────────────────────────────────────
-    u_nom_flat_np = np.concatenate(
-        [np.array(_pack_control(u), dtype=np.float64) for u in mpc_state.u_ref]
+    u_nom_flat_np = jnp.concatenate(
+        [jnp.array(_pack_control(u), dtype=jnp.float64) for u in mpc_state.u_ref]
     )                                                            # (N·nu,)
     A_list, l_list, u_list = [], [], []
 
     if params.u_min is not None or params.u_max is not None:
-        A_list.append(np.eye(N * nu, dtype=np.float64))
-        lo = np.tile(
-            np.array(params.u_min, dtype=np.float64) if params.u_min is not None
-            else np.full(nu, -np.inf),
+        A_list.append(jnp.eye(N * nu, dtype=jnp.float64))
+        lo = jnp.tile(
+            jnp.array(params.u_min, dtype=jnp.float64) if params.u_min is not None
+            else jnp.full(nu, -jnp.inf),
             N,
         )
-        hi = np.tile(
-            np.array(params.u_max, dtype=np.float64) if params.u_max is not None
-            else np.full(nu, np.inf),
+        hi = jnp.tile(
+            jnp.array(params.u_max, dtype=jnp.float64) if params.u_max is not None
+            else jnp.full(nu, jnp.inf),
             N,
         )
         l_list.append(lo - u_nom_flat_np)
         u_list.append(hi - u_nom_flat_np)
 
     if params.du_max is not None:
-        D = (np.eye(N * nu, dtype=np.float64)
-             - np.eye(N * nu, k=-nu, dtype=np.float64))
+        D = (jnp.eye(N * nu, dtype=jnp.float64)
+             - jnp.eye(N * nu, k=-nu, dtype=jnp.float64))
         A_list.append(D)
-        du_np = np.tile(np.array(params.du_max, dtype=np.float64), N)
+        du_np = jnp.tile(jnp.array(params.du_max, dtype=jnp.float64), N)
         l_list.append(-du_np)
         u_list.append(du_np)
 
-    # ── 7. Solve ─────────────────────────────────────────────────────────────
-    warm = (np.array(mpc_state.u_warm, dtype=np.float64)
-            if mpc_state.u_warm is not None else None)
-
     if A_list:
-        A_np = np.concatenate(A_list, axis=0)
-        l_np = np.concatenate(l_list, axis=0)
-        u_np = np.concatenate(u_list, axis=0)
-        DU_np, solved = _solve_osqp(P_np, q_np, A_np, l_np, u_np, warm)
+        A_np = jnp.concatenate(A_list, axis=0)
+        l_np = jnp.concatenate(l_list, axis=0)
+        u_np = jnp.concatenate(u_list, axis=0)
     else:
-        DU_np  = _solve_unconstrained(P_np, q_np)
-        solved = True
+        A_np = l_np = u_np = None
+
+    if A_np is not None:
+        G = jnp.concatenate([A_np, -A_np], axis=0)
+        h = jnp.concatenate([u_np, -l_np], axis=0)
+    else:
+        G = None
+        h = None
+
+    # ── 7. Solve ─────────────────────────────────────────────────────────────
+    # warm = (jnp.array(mpc_state.u_warm, dtype=jnp.float64)
+    #         if mpc_state.u_warm is not None else None)
+    
+    sol = solver.run(
+        params_obj=(P_np, q_np),
+        params_ineq=(G, h) if G is not None else None,
+        # init_params=warm,
+        init_params=None,
+    )
+
+    # if A_list:
+    #     sol = solver.run(
+    #         params_obj=(P_np, q_np),
+    #         params_eq=None,
+    #         params_ineq=(A_np, l_np, u_np),
+    #         init_params=warm,
+    #     )
+    # else:
+    #     sol = solver.run(
+    #         params_obj=(P_np, q_np),
+    #         init_params=warm,
+    #     )
+
+    DU_np = sol.params.primal
+    solved = sol.state.status == 1
 
     # ── 8. Pack outputs ──────────────────────────────────────────────────────
-    DU     = jnp.array(DU_np, dtype=jnp.float32)               # (N·nu,)
+    DU = DU_np.astype(jnp.float32)                              # (N·nu,)
     du_opt = DU.reshape(N, nu)                                  # (N, 5)
     u_opt  = du_opt + jnp.array(u_nom_flat_np,
                                  dtype=jnp.float32).reshape(N, nu)  # (N, 5)
@@ -537,7 +613,7 @@ def mpc_step(
         MPCResult(u_opt=u_opt, du_opt=du_opt, x_pred=x_pred,
                   cost=cost, solved=solved),
         MPCState(x_ref=mpc_state.x_ref, u_ref=mpc_state.u_ref,
-                 u_warm=warm_next),
+                 u_warm=warm_next, solver=mpc_state.solver),
     )
  
  
