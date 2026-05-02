@@ -17,11 +17,13 @@ point without requiring a separate path planner.
 
 MPC loop
 ---------
-The loop runs in plain Python (not jax.lax.scan) because mpc_step is not
-JIT-compatible end-to-end (OSQP is a Python-level call).  Each iteration:
+The closed-loop simulation runs as a JAX scan.  The plant is stepped at the
+simulation timestep, while the MPC solve is performed once every
+*mpc_period_steps* timesteps and the last solved input is held between solves.
+Each iteration:
   1.  Slice reference window from the pre-computed trajectory.
-  2.  Call mpc_step → get u_opt[0], the optimal first input.
-  3.  Step the *true* plant with that input (adding optional process noise).
+  2.  Call mpc_step on solve timesteps → get u_opt[0], the optimal first input.
+  3.  Step the *true* plant with the new or held input (adding optional process noise).
   4.  Log everything.
 
 Plots
@@ -59,16 +61,16 @@ from ackermann_jax import (
 from ackermann_jax.mpc import (
     MPCParams,
     MPCResult,
-    MPCState,
     default_mpc_params,
     init_mpc_state,
     mpc_step,
+    mpc_step_batched,
     _compute_FG,
     _build_prediction_matrices_np
 )
 import scipy.linalg as sla
 
-jax.config.update("jax_enable_x64", False)
+jax.config.update("jax_enable_x64", True)
 
 
 # ---------------------------------------------------------------------------
@@ -231,15 +233,17 @@ def run_mpc(
     method: str = "semi_implicit_euler",
     process_noise_std: float = 0.0,
     rng_key=None,
+    mpc_period_steps: int = 5,
 ):
     """
     Closed-loop MPC simulation starting from ref_states[start_idx].
 
-    At each step k the reference window is:
+    At each MPC solve step k the reference window is:
         x_ref = ref_states[k : k + N + 1]
         u_ref = ref_inputs[k : k + N]
 
-    The first optimal input u_opt[0] is applied to the true plant.
+    The first optimal input u_opt[0] is applied to the true plant and then
+    held until the next solve.
 
     Returns
     -------
@@ -250,39 +254,64 @@ def run_mpc(
     dt     = params.dt
     n_steps = len(ref_inputs) - start_idx - N   # steps where full window exists
 
-    x_true = ref_states[start_idx]
-    mpc_state = init_mpc_state(
-        ref_states[start_idx : start_idx + N + 1],
-        ref_inputs[start_idx : start_idx + N],
-        params,
-    )
+    if mpc_period_steps < 1:
+        raise ValueError("mpc_period_steps must be >= 1")
 
-    results: List[MPCResult]          = []
-    true_states: List[AckermannCarState] = [x_true]
+    ref_state_batch = jax.tree.map(lambda *xs: jnp.stack(xs), *ref_states)
+    ref_input_batch = jax.tree.map(lambda *us: jnp.stack(us), *ref_inputs)
+    x0 = jax.tree.map(lambda a: a[start_idx], ref_state_batch)
+    u0 = jnp.concatenate(
+        [
+            jnp.atleast_1d(ref_input_batch.delta[start_idx]),
+            ref_input_batch.tau_w[start_idx],
+        ]
+    ).astype(jnp.float32)
+    warm0 = jnp.zeros((N * 5,), dtype=jnp.float32)
+    key0 = rng_key if rng_key is not None else jax.random.PRNGKey(0)
 
-    key = rng_key if rng_key is not None else jax.random.PRNGKey(0)
-
-    for step in range(n_steps):
-        k = start_idx + step
-
-        # Update reference window (receding horizon)
-        mpc_state = MPCState(
-            x_ref=ref_states[k : k + N + 1],
-            u_ref=ref_inputs[k : k + N],
-            u_warm=mpc_state.u_warm,
-            solver=mpc_state.solver,
+    def _window(tree, start, length):
+        return jax.tree.map(
+            lambda a: jax.lax.dynamic_slice_in_dim(a, start, length, axis=0),
+            tree,
         )
 
-        result, mpc_state = mpc_step(model, mpc_state, params, x_true)
+    def _zero_result(u_apply):
+        return MPCResult(
+            u_opt=jnp.tile(u_apply[None, :], (N, 1)),
+            du_opt=jnp.zeros((N, 5), dtype=jnp.float32),
+            x_pred=jnp.zeros((N + 1, 16), dtype=jnp.float32),
+            cost=jnp.array(jnp.nan, dtype=jnp.float32),
+            solved=jnp.array(False),
+        )
 
-        # Apply first optimal input
+    def _scan_body(carry, step):
+        x_true, u_hold, warm, key = carry
+        k = start_idx + step
+        x_ref_window = _window(ref_state_batch, k, N + 1)
+        u_ref_window = _window(ref_input_batch, k, N)
+
+        def _solve(_):
+            result, warm_next = mpc_step_batched(
+                model, x_ref_window, u_ref_window, params, x_true, warm
+            )
+            return result, result.u_opt[0], warm_next
+
+        def _hold(_):
+            return _zero_result(u_hold), u_hold, warm
+
+        result, u_apply_flat, warm_next = jax.lax.cond(
+            step % mpc_period_steps == 0,
+            _solve,
+            _hold,
+            operand=None,
+        )
+
         u_apply = AckermannCarInput(
-            delta=result.u_opt[0, 0],
-            tau_w=result.u_opt[0, 1:5],
+            delta=u_apply_flat[0],
+            tau_w=u_apply_flat[1:5],
         )
         x_next = model.step(x=x_true, u=u_apply, dt=dt, method=method)
 
-        # Optional Gaussian process noise on position + velocity
         if process_noise_std > 0.0:
             key, subkey = jax.random.split(key)
             noise = process_noise_std * jax.random.normal(subkey, (3,))
@@ -294,9 +323,28 @@ def run_mpc(
                 omega_W=x_next.omega_W,
             )
 
-        results.append(result)
-        true_states.append(x_next)
-        x_true = x_next
+        return (x_next, u_apply_flat, warm_next, key), (result, x_next)
+
+    @jax.jit
+    def _run_scan():
+        carry0 = (x0, u0, warm0, key0)
+        return jax.lax.scan(_scan_body, carry0, jnp.arange(n_steps))
+
+    _, (result_hist, x_next_hist) = _run_scan()
+    jax.block_until_ready(x_next_hist)
+    jax.block_until_ready(result_hist.u_opt)
+
+    true_state_hist = jax.tree.map(
+        lambda first, rest: jnp.concatenate([first[None, ...], rest], axis=0),
+        x0,
+        x_next_hist,
+    )
+
+    results = [jax.tree.map(lambda a, i=i: a[i], result_hist) for i in range(n_steps)]
+    true_states = [
+        jax.tree.map(lambda a, i=i: a[i], true_state_hist)
+        for i in range(n_steps + 1)
+    ]
 
     return results, true_states
 
@@ -417,8 +465,9 @@ def main():
     params = default_params()
     model  = AckermannCarModel(params)
 
-    # Simulation parameters — MPC runs at 20 Hz (dt=0.05 s)
+    # Simulation parameters — plant runs at 100 Hz, MPC runs every 5 timesteps.
     dt            = 0.01
+    mpc_period_steps = 5
     T_settle      = 1.5
     T_weave       = 10.0   # shorter than EKF test; MPC loop is slower
     v_cmd         = 1.0
@@ -455,11 +504,11 @@ def main():
     print("G_weave [6:9, :] (velocity rows):\n", np.array(G_weave [6:9, :]))
 
     # ── Step 2: MPC hyperparameters ───────────────────────────────────────────
-    N_horizon = 5
+    N_horizon = 20
     mpc_params = default_mpc_params(N=N_horizon, dt=dt)
 
     n_avail = len(ref_inputs) - N_settle - N_horizon
-    print(f"\nMPC horizon N={N_horizon}, dt={dt} s")
+    print(f"\nMPC horizon N={N_horizon}, dt={dt} s, solve period={mpc_period_steps} steps")
     print(f"Closed-loop steps available: {n_avail}  ({n_avail * dt:.1f} s)")
 
     # ── Step 3: Warm-up / JIT compilation (first call) ────────────────────────
@@ -518,6 +567,7 @@ def main():
         model, ref_states, ref_inputs, mpc_params,
         start_idx=N_settle,
         process_noise_std=0.0,
+        mpc_period_steps=mpc_period_steps,
     )
     t_run = time.perf_counter() - t0
     n_steps = len(results)
@@ -534,7 +584,8 @@ def main():
     print(f"\nTracking statistics over {n_steps} steps:")
     print(f"  Position RMSE : {np.sqrt(np.mean(pos_err**2)):.4f} m")
     print(f"  Position max  : {np.max(pos_err):.4f} m")
-    print(f"  QP solved     : {n_solved}/{n_steps}")
+    print(f"  QP solved     : {n_solved}/{n_steps} timesteps "
+          f"({n_solved} solves requested at period {mpc_period_steps})")
     if n_fallback:
         print(f"  QP fallbacks  : {n_fallback}")
 

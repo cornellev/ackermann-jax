@@ -38,8 +38,6 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import Array
 from jaxopt import OSQP
-import numpy as np
-import scipy.linalg as sla
 
 from .car import AckermannCarState, AckermannCarInput, AckermannCarModel
 from .ekf import compute_F, ERROR_DIM
@@ -151,14 +149,14 @@ def _build_prediction_matrices_np(
     nu = Gs.shape[2]
 
     # Phi
-    Phi = jnp.zeros((N * nx, nx), dtype=np.float64)
-    F_prod = jnp.eye(nx, dtype=np.float64)
+    Phi = jnp.zeros((N * nx, nx), dtype=jnp.float64)
+    F_prod = jnp.eye(nx, dtype=jnp.float64)
     for k in range(N):
         F_prod = Fs[k] @ F_prod
         Phi = Phi.at[k * nx:(k + 1) * nx].set(F_prod)
 
     # Theta  (block-lower-triangular)
-    Theta = jnp.zeros((N * nx, N * nu), dtype=np.float64)
+    Theta = jnp.zeros((N * nx, N * nu), dtype=jnp.float64)
     for j in range(N):
         col = Gs[j].copy()                                  # (nx, nu)
         Theta = Theta.at[j * nx:(j + 1) * nx, j * nu:(j + 1) * nu].set(col)
@@ -232,7 +230,8 @@ def build_prediction_matrices(
 
     return Phi, Theta
 
-@dataclass
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
 class MPCParams:
     """
     Static hyperparameters for the MPC problem.
@@ -256,6 +255,39 @@ class MPCParams:
     u_min:  Optional[Array] = None   # (5,) absolute input lower bound
     u_max:  Optional[Array] = None   # (5,) absolute input upper bound
     du_max: Optional[Array] = None   # (5,) per-step slew-rate limit
+
+    def tree_flatten(self):
+        children = [jnp.asarray(self.dt), self.Q, self.R, self.Pf]
+        has_u_min = self.u_min is not None
+        has_u_max = self.u_max is not None
+        has_du_max = self.du_max is not None
+        if has_u_min:
+            children.append(self.u_min)
+        if has_u_max:
+            children.append(self.u_max)
+        if has_du_max:
+            children.append(self.du_max)
+        aux = (self.N, has_u_min, has_u_max, has_du_max)
+        return tuple(children), aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        N, has_u_min, has_u_max, has_du_max = aux
+        idx = 0
+        dt = children[idx]
+        idx += 1
+        Q = children[idx]
+        idx += 1
+        R = children[idx]
+        idx += 1
+        Pf = children[idx]
+        idx += 1
+        u_min = children[idx] if has_u_min else None
+        idx += int(has_u_min)
+        u_max = children[idx] if has_u_max else None
+        idx += int(has_u_max)
+        du_max = children[idx] if has_du_max else None
+        return cls(N=N, dt=dt, Q=Q, R=R, Pf=Pf, u_min=u_min, u_max=u_max, du_max=du_max)
 
 # Mutable MPC state for receeding-horizon iterations
 @dataclass
@@ -294,13 +326,21 @@ def init_mpc_state(x_ref, u_ref, params: MPCParams) -> MPCState:
 # Output
 # ---------------------------------------------------------------------------
 
-@dataclass
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
 class MPCResult:
     u_opt:   Array   # (N, 5)    optimal absolute inputs  ū_k + δu*_k
     du_opt:  Array   # (N, 5)    optimal input deviations δu*_k
     x_pred:  Array   # (N+1, 16) predicted error-state trajectory (incl. dx₀)
-    cost:    float   # evaluated QP objective
-    solved:  bool    # False if OSQP failed/unavailable and fallback was used
+    cost:    Array   # evaluated QP objective
+    solved:  Array   # False if OSQP failed/unavailable and fallback was used
+
+    def tree_flatten(self):
+        return (self.u_opt, self.du_opt, self.x_pred, self.cost, self.solved), None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return cls(*children)
 
 # Assemble the QP
 def _build_qp(
@@ -451,6 +491,116 @@ def block_diag_jax(mats):
         i += s
     return out
 
+
+def _pack_control_batch(u_ref: AckermannCarInput) -> Array:
+    """Batched AckermannCarInput -> (..., 5)."""
+    return jnp.concatenate([u_ref.delta[..., None], u_ref.tau_w], axis=-1)
+
+
+@jax.jit
+def mpc_step_batched(
+    model: AckermannCarModel,
+    x_ref: AckermannCarState,
+    u_ref: AckermannCarInput,
+    params: MPCParams,
+    x_current: AckermannCarState,
+    u_warm: Optional[Array] = None,
+) -> Tuple[MPCResult, Array]:
+    """
+    JIT-compatible MPC step for pre-stacked reference windows.
+
+    x_ref is a pytree with leading dimension N+1, and u_ref is a pytree
+    with leading dimension N.  This avoids Python list handling in the
+    performance-critical path and can be called from lax.scan.
+    """
+    del u_warm
+    N = params.N
+    dt = params.dt
+    nx = ERROR_DIM
+    nu = INPUT_DIM
+
+    dx0 = pack_error_state(state_difference(jax.tree.map(lambda a: a[0], x_ref), x_current))
+    x_ref_linearization = jax.tree.map(lambda a: a[:N], x_ref)
+
+    Fs_jax, Gs_jax = jax.vmap(lambda x, u: _compute_FG(model, x, u, dt))(
+        x_ref_linearization, u_ref
+    )
+
+    Fs = Fs_jax.astype(jnp.float64)
+    Gs = Gs_jax.astype(jnp.float64)
+    dx0_64 = dx0.astype(jnp.float64)
+
+    Phi, Theta = _build_prediction_matrices_np(Fs, Gs)
+
+    Q = params.Q.astype(jnp.float64)
+    Pf = params.Pf.astype(jnp.float64)
+    R = params.R.astype(jnp.float64)
+    Q_bar = block_diag_jax([Q] * (N - 1) + [Pf])
+    R_bar = block_diag_jax([R] * N)
+
+    TtQ = Theta.T @ Q_bar
+    H = TtQ @ Theta + R_bar
+    f = TtQ @ (Phi @ dx0_64)
+    P = H + H.T + 1e-8 * jnp.eye(N * nu, dtype=jnp.float64)
+    q = 2.0 * f
+
+    u_nom_flat = _pack_control_batch(u_ref).reshape(N * nu).astype(jnp.float64)
+    A_list, l_list, u_list = [], [], []
+
+    if params.u_min is not None or params.u_max is not None:
+        A_list.append(jnp.eye(N * nu, dtype=jnp.float64))
+        lo = jnp.tile(
+            params.u_min.astype(jnp.float64)
+            if params.u_min is not None
+            else jnp.full((nu,), -jnp.inf, dtype=jnp.float64),
+            N,
+        )
+        hi = jnp.tile(
+            params.u_max.astype(jnp.float64)
+            if params.u_max is not None
+            else jnp.full((nu,), jnp.inf, dtype=jnp.float64),
+            N,
+        )
+        l_list.append(lo - u_nom_flat)
+        u_list.append(hi - u_nom_flat)
+
+    if params.du_max is not None:
+        D = jnp.eye(N * nu, dtype=jnp.float64) - jnp.eye(N * nu, k=-nu, dtype=jnp.float64)
+        du = jnp.tile(params.du_max.astype(jnp.float64), N)
+        A_list.append(D)
+        l_list.append(-du)
+        u_list.append(du)
+
+    if A_list:
+        A = jnp.concatenate(A_list, axis=0)
+        lower = jnp.concatenate(l_list, axis=0)
+        upper = jnp.concatenate(u_list, axis=0)
+        G = jnp.concatenate([A, -A], axis=0)
+        h = jnp.concatenate([upper, -lower], axis=0)
+        params_ineq = (G, h)
+    else:
+        params_ineq = None
+
+    solver = create_osqp_solver()
+    sol = solver.run(
+        params_obj=(P, q),
+        params_ineq=params_ineq,
+        init_params=None,
+    )
+
+    DU_64 = sol.params.primal
+    DU = DU_64.astype(jnp.float32)
+    du_opt = DU.reshape(N, nu)
+    u_opt = du_opt + u_nom_flat.astype(jnp.float32).reshape(N, nu)
+
+    X_pred = (Phi @ dx0_64 + Theta @ DU_64).reshape(N, nx).astype(jnp.float32)
+    x_pred = jnp.concatenate([dx0.astype(jnp.float32)[None, :], X_pred], axis=0)
+    cost = (0.5 * DU_64 @ P @ DU_64 + q @ DU_64).astype(jnp.float32)
+    solved = sol.state.status == 1
+    warm_next = jnp.concatenate([DU[nu:], jnp.zeros(nu, dtype=jnp.float32)])
+
+    return MPCResult(u_opt=u_opt, du_opt=du_opt, x_pred=x_pred, cost=cost, solved=solved), warm_next
+
 def mpc_step(
     model: AckermannCarModel,
     mpc_state: MPCState,
@@ -481,137 +631,19 @@ def mpc_step(
                           (update x_ref / u_ref from your planner first)
     """
     N  = params.N
-    dt = params.dt
-    nx = ERROR_DIM
     nu = INPUT_DIM
 
-    solver = mpc_state.solver
-
-    # ── 1. Initial error state ──────────────────────────────────────────────
-    dx0 = pack_error_state(state_difference(mpc_state.x_ref[0], x_current))
-
-    # ── 2. LTV Jacobians F_k, G_k (JIT-compiled per step) ──────────────────
-    x_ref_batch = jax.tree.map(lambda *xs: jnp.stack(xs), *mpc_state.x_ref[:N])
+    x_ref_batch = jax.tree.map(lambda *xs: jnp.stack(xs), *mpc_state.x_ref[: N + 1])
     u_ref_batch = jax.tree.map(lambda *us: jnp.stack(us), *mpc_state.u_ref[:N])
-
-    FG_batched = jax.vmap(lambda x, u: _compute_FG(model, x, u, dt))(x_ref_batch, u_ref_batch)
-    Fs_jax, Gs_jax = FG_batched
-
-    # ── 3. Prediction matrices in float64 numpy ─────────────────────────────
-    # Using float64 because the stiff modes of this model have |λ| >> 1
-    # at dt = 50 ms (contact spring |λ|≈12.3, wheel speeds |λ|≈11.2, yaw
-    # rate |λ|≈5.1).  In float32 Phi = F^N overflows completely for N ≥ 10.
-    Fs_np  = jnp.stack([jnp.array(F, dtype=jnp.float64) for F in Fs_jax])
-    Gs_np  = jnp.stack([jnp.array(G, dtype=jnp.float64) for G in Gs_jax])
-    dx0_np = jnp.array(dx0, dtype=jnp.float64)
-
-    Phi_np, Theta_np = _build_prediction_matrices_np(Fs_np, Gs_np)
-
-    # ── 4. Cost matrices in float64 ─────────────────────────────────────────
-    Q_np  = jnp.array(params.Q,  dtype=jnp.float64)
-    Pf_np = jnp.array(params.Pf, dtype=jnp.float64)
-    R_np  = jnp.array(params.R,  dtype=jnp.float64)
-    # Q_bar_np = sla.block_diag(*([Q_np] * (N - 1) + [Pf_np]))  # (N·nx, N·nx)
-    # R_bar_np = sla.block_diag(*([R_np] * N))                    # (N·nu, N·nu)
-    Q_bar_np = block_diag_jax([Q_np]*(N-1) + [Pf_np])
-    R_bar_np = block_diag_jax([R_np]*N)
-
-    # ── 5. Assemble QP in float64 (OSQP: min ½ U'PU + q'U) ─────────────────
-    TtQ   = Theta_np.T @ Q_bar_np                               # (N·nu, N·nx)
-    H_np  = TtQ @ Theta_np + R_bar_np                           # (N·nu, N·nu)
-    f_np  = TtQ @ (Phi_np @ dx0_np)                             # (N·nu,)
-    # Symmetrise + small Tikhonov regularisation for ill-conditioned H
-    P_np  = H_np + H_np.T + 1e-8 * jnp.eye(N * nu, dtype=jnp.float64)
-    q_np  = 2.0 * f_np
-
-    # ── 6. Constraint matrices ───────────────────────────────────────────────
-    u_nom_flat_np = jnp.concatenate(
-        [jnp.array(_pack_control(u), dtype=jnp.float64) for u in mpc_state.u_ref]
-    )                                                            # (N·nu,)
-    A_list, l_list, u_list = [], [], []
-
-    if params.u_min is not None or params.u_max is not None:
-        A_list.append(jnp.eye(N * nu, dtype=jnp.float64))
-        lo = jnp.tile(
-            jnp.array(params.u_min, dtype=jnp.float64) if params.u_min is not None
-            else jnp.full(nu, -jnp.inf),
-            N,
-        )
-        hi = jnp.tile(
-            jnp.array(params.u_max, dtype=jnp.float64) if params.u_max is not None
-            else jnp.full(nu, jnp.inf),
-            N,
-        )
-        l_list.append(lo - u_nom_flat_np)
-        u_list.append(hi - u_nom_flat_np)
-
-    if params.du_max is not None:
-        D = (jnp.eye(N * nu, dtype=jnp.float64)
-             - jnp.eye(N * nu, k=-nu, dtype=jnp.float64))
-        A_list.append(D)
-        du_np = jnp.tile(jnp.array(params.du_max, dtype=jnp.float64), N)
-        l_list.append(-du_np)
-        u_list.append(du_np)
-
-    if A_list:
-        A_np = jnp.concatenate(A_list, axis=0)
-        l_np = jnp.concatenate(l_list, axis=0)
-        u_np = jnp.concatenate(u_list, axis=0)
-    else:
-        A_np = l_np = u_np = None
-
-    if A_np is not None:
-        G = jnp.concatenate([A_np, -A_np], axis=0)
-        h = jnp.concatenate([u_np, -l_np], axis=0)
-    else:
-        G = None
-        h = None
-
-    # ── 7. Solve ─────────────────────────────────────────────────────────────
-    # warm = (jnp.array(mpc_state.u_warm, dtype=jnp.float64)
-    #         if mpc_state.u_warm is not None else None)
-    
-    sol = solver.run(
-        params_obj=(P_np, q_np),
-        params_ineq=(G, h) if G is not None else None,
-        # init_params=warm,
-        init_params=None,
+    warm = (
+        jnp.asarray(mpc_state.u_warm, dtype=jnp.float32)
+        if mpc_state.u_warm is not None
+        else jnp.zeros(N * nu, dtype=jnp.float32)
     )
-
-    # if A_list:
-    #     sol = solver.run(
-    #         params_obj=(P_np, q_np),
-    #         params_eq=None,
-    #         params_ineq=(A_np, l_np, u_np),
-    #         init_params=warm,
-    #     )
-    # else:
-    #     sol = solver.run(
-    #         params_obj=(P_np, q_np),
-    #         init_params=warm,
-    #     )
-
-    DU_np = sol.params.primal
-    solved = sol.state.status == 1
-
-    # ── 8. Pack outputs ──────────────────────────────────────────────────────
-    DU = DU_np.astype(jnp.float32)                              # (N·nu,)
-    du_opt = DU.reshape(N, nu)                                  # (N, 5)
-    u_opt  = du_opt + jnp.array(u_nom_flat_np,
-                                 dtype=jnp.float32).reshape(N, nu)  # (N, 5)
-
-    X_pred_np = (Phi_np @ dx0_np + Theta_np @ DU_np).reshape(N, nx)
-    X_pred    = jnp.array(X_pred_np, dtype=jnp.float32)
-    x_pred    = jnp.concatenate([dx0[None], X_pred], axis=0)   # (N+1, nx)
-
-    cost = float(0.5 * DU_np @ P_np @ DU_np + q_np @ DU_np)
-
-    # ── 9. Warm-start: shift left by one block, pad zeros ───────────────────
-    warm_next = jnp.concatenate([DU[nu:], jnp.zeros(nu, dtype=jnp.float32)])
+    result, warm_next = mpc_step_batched(model, x_ref_batch, u_ref_batch, params, x_current, warm)
 
     return (
-        MPCResult(u_opt=u_opt, du_opt=du_opt, x_pred=x_pred,
-                  cost=cost, solved=solved),
+        result,
         MPCState(x_ref=mpc_state.x_ref, u_ref=mpc_state.u_ref,
                  u_warm=warm_next, solver=mpc_state.solver),
     )
@@ -642,18 +674,18 @@ def default_mpc_params(N: int = 20, dt: float = 0.05) -> MPCParams:
     # The contact spring is uncontrollable on this time-scale anyway, and wheel
     # speeds are regulated by the torque inner loop.
     q_diag = jnp.array([
-        10.0, 10.0,  0.0,   # dp_W       x, y tracked;  z uncontrollable (spring)
-         5.0,  5.0,  5.0,   # dθ_B       heading matters
-         2.0,  2.0,  0.0,   # dv_W       forward + lateral speed; z excluded
-         0.1,  0.1,  0.5,   # dw_B       yaw rate penalised, pitch/roll light
+        25.0, 35.0,  0.0,   # dp_W       x, y tracked;  z uncontrollable (spring)
+         1.0,  1.0,  20.0,   # dθ_B       heading matters
+         8.0,  8.0,  8.0,   # dv_W       forward + lateral speed; z excluded
+         0.1,  0.1,  5.0,   # dw_B       yaw rate penalised, pitch/roll light
          0.0,  0.0,  0.0,   # dω_W  wheel speeds: stiff + handled by inner loop
          0.0,               # dω_W[3]
     ], dtype=jnp.float32)
     Q  = jnp.diag(q_diag)
-    Pf = 5.0 * Q            # terminal: heavier than running; swap for DARE
+    Pf = 10.0 * Q            # terminal: heavier than running; swap for DARE
  
     r_diag = jnp.array(
-        [0.5,  0.1, 0.1, 0.1, 0.1],   # delta, tau_w x4
+        [1.5,  0.03, 0.03, 0.03, 0.03],   # delta, tau_w x4
         dtype=jnp.float32,
     )
     R = jnp.diag(r_diag)
@@ -667,7 +699,7 @@ def default_mpc_params(N: int = 20, dt: float = 0.05) -> MPCParams:
     # Per-step slew limits:
     #   steering: 0.05 rad/step = 1 rad/s at 20 Hz
     #   torque:   0.1 N·m/step  = 2 N·m/s at 20 Hz
-    du_max = jnp.array([0.05, 0.1, 0.1, 0.1, 0.1], dtype=jnp.float32)
+    du_max = jnp.array([0.04, 0.2, 0.2, 0.2, 0.2], dtype=jnp.float32)
  
     return MPCParams(
         N=N,
