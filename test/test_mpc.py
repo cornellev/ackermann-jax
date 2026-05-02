@@ -82,7 +82,6 @@ def yaw_from_state(x: AckermannCarState) -> float:
 # ---------------------------------------------------------------------------
 # Step 1 — Open-loop reference trajectory (same PI controllers as EKF test)
 # ---------------------------------------------------------------------------
-
 def build_reference_trajectory(
     model: AckermannCarModel,
     x0: AckermannCarState,
@@ -91,102 +90,130 @@ def build_reference_trajectory(
     T_settle: float = 1.5,
     T_weave: float = 15.0,
     v_cmd: float = 1.0,
-    psi_amplitude: float = 0.30,
-    psi_frequency: float = 0.4,
-    # PI / PID controller gains (same defaults as EKF test)
-    Kp_v: float = 40.0,
-    Ki_v: float = 2.0,
+    sine_amplitude: float = 0.50,
+    sine_frequency: float = 0.2,
     tau_max: float = 0.35,
-    integ_max_v: float = 0.5,
-    Kp_s: float = 3.0,
-    Ki_s: float = 2.0,
-    Kd_s: float = 0.4,
-    delta_max: float = 0.35,
-    integ_max_s: float = 0.5,
-    method: str = "semi_implicit_euler",
+    method: str ="semi_implicit_euler"
 ):
     """
-    Simulate the car with PI/PID controllers to produce the ideal reference.
-
-    Returns
-    -------
-    ref_states : list[AckermannCarState]   length N_total + 1
-    ref_inputs : list[AckermannCarInput]   length N_total
-    logs       : dict of numpy arrays
-    N_settle   : int  — number of settle steps
+    Build a pure geometric sine wave reference:
+        x(t) = v_cmd * t
+        y(t) + A * sin(2πf t)
     """
     N_settle = int(T_settle / dt)
     N_weave  = int(T_weave  / dt)
     N_total  = N_settle + N_weave
 
-    ref_states: List[AckermannCarState] = [x0]
+    # 1. Settle phase
+    ref_states: List[AckermannCarState] = []
     ref_inputs: List[AckermannCarInput] = []
-    log_p, log_yaw, log_psi_cmd, log_delta, log_tau_w, log_t = (
-        [], [], [], [], [], []
-    )
 
-    integ_v = 0.0
-    integ_s = 0.0
+    zero_u = AckermannCarInput(delta=jnp.array(0.0,dtype=jnp.float32), tau_w=jnp.zeros(4,dtype=jnp.float32))
+
     x = x0
-
-    for k in range(N_total):
-        t_weave = max(0.0, k * dt - T_settle)
-        v_ref   = 0.0 if k < N_settle else v_cmd
-        psi_cmd = (
-            0.0 if k < N_settle
-            else psi_amplitude * float(jnp.sin(2.0 * jnp.pi * psi_frequency * t_weave))
-        )
-
-        tau_w, integ_v = model.map_velocity_to_wheel_torques(
-            x=x,
-            v_cmd=v_ref,
-            integral_state=jnp.float32(integ_v),
-            dt=dt,
-            Kp=Kp_v, Ki=Ki_v,
-            tau_max=tau_max,
-            integ_max=integ_max_v,
-            use_traction_limit=True,
-        )
-
-        delta, integ_s = model.map_heading_to_steering(
-            x=x,
-            psi_cmd=psi_cmd,
-            integral_state=jnp.float32(integ_s),
-            dt=dt,
-            Kp=Kp_s, Ki=Ki_s, Kd=Kd_s,
-            delta_max=delta_max,
-            integ_max=integ_max_s,
-        )
-
-        u      = AckermannCarInput(delta=delta, tau_w=tau_w)
-        x_next = model.step(x=x, u=u, dt=dt, method=method)
-
-        ref_inputs.append(u)
+    for _ in range(N_settle):
+        x_next = model.step(x=x, u=zero_u, dt=dt, method=method)
+        ref_inputs.append(zero_u)
         ref_states.append(x_next)
-
-        log_p.append(np.array(x.p_W))
-        log_yaw.append(float(x.R_WB.compute_yaw_radians()))
-        log_psi_cmd.append(psi_cmd)
-        log_delta.append(float(delta))
-        log_tau_w.append(np.array(tau_w))
-        log_t.append(k * dt)
-
         x = x_next
-        integ_v = float(integ_v)
-        integ_s = float(integ_s)
 
-    # Append last state quantities
-    log_p.append(np.array(x.p_W))
-    log_yaw.append(float(x.R_WB.compute_yaw_radians()))
+    z_ref = float(x.p_W[2])
 
+    x_origin = float(x.p_W[0])
+    y_origin = float(x.p_W[1])
+
+    # Helper: compute rolling wheel speeds from the reference kinematics
+    def rolling_omega_for_state(x_ref: AckermannCarState, delta_ref: float):
+        u_tmp = AckermannCarInput(delta=jnp.array(delta_ref,dtype=jnp.float32), tau_w=jnp.zeros(4,dtype=jnp.float32))
+        diag = model.diagnostics(x_ref, u_tmp)
+        return diag.v_t / model.params.geom.wheel_radius
+
+    # Pure swine wave phase
     logs = {
-        "p_W":     np.array(log_p),           # (N_total+1, 3)
-        "yaw":     np.array(log_yaw),          # (N_total+1,)
-        "psi_cmd": np.array(log_psi_cmd),      # (N_total,)
-        "delta":   np.array(log_delta),        # (N_total,)
-        "tau_w":   np.array(log_tau_w),        # (N_total, 4)
-        "t":       np.array(log_t),            # (N_total,)
+        "p": [],
+        "yaw": [],
+        "psi_cmd": [],
+        "delta": [],
+        "tau_w": [],
+        "t": [],
     }
+    for k in range(N_settle):
+        xs = ref_states[k]
+        logs["p"].append(xs.p_W)
+        logs["yaw"].append(yaw_from_state(xs))
+        logs["psi_cmd"].append(0.0)
+        logs["delta"].append(0.0)
+        logs["tau_w"].append(np.zeros(4))
+        logs["t"].append(k * dt)
+
+    omega_sine = 2.0 * np.pi * sine_frequency
+
+    for i in range(N_weave):
+        t = i * dt
+
+        x_pos = x_origin + v_cmd * t
+        y_pos = y_origin + sine_amplitude * np.sin(omega_sine * t)
+
+        x_dot = v_cmd
+        y_dot = sine_amplitude * omega_sine * np.cos(omega_sine * t)
+        y_ddot = -sine_amplitude * omega_sine**2 * np.sin(omega_sine * t)
+
+        speed = np.hypot(x_dot, y_dot)
+
+        yaw = np.arctan2(y_dot, x_dot)
+
+        yaw_rate = (x_dot * y_ddot) / (x_dot**2 + y_dot**2)
+
+        delta_ref = np.arctan2(model.params.geom.L * yaw_rate, speed)
+        delta_ref = np.clip(delta_ref, -0.35, 0.35)
+
+        R_WB = jaxlie.SO3.from_z_radians(jnp.array(yaw, dtype=jnp.float32))
+
+        v_W = jnp.array([x_dot, y_dot, 0.0], dtype=jnp.float32)
+        w_B = jnp.array([0.0, 0.0, yaw_rate], dtype=jnp.float32)
+
+        # Temporary omega: overwritten by rolling_omega_for_state
+        x_ref_tmp = AckermannCarState(
+            p_W=jnp.array([x_pos, y_pos, z_ref], dtype=jnp.float32),
+            R_WB=R_WB,
+            v_W=v_W,
+            w_B=w_B,
+            omega_W=jnp.zeros(4,dtype=jnp.float32)
+        )
+
+        omega_roll = rolling_omega_for_state(x_ref_tmp, delta_ref)
+
+        x_ref = AckermannCarState(
+            p_W = x_ref_tmp.p_W,
+            R_WB = x_ref_tmp.R_WB,
+            v_W = x_ref_tmp.v_W,
+            w_B = x_ref_tmp.w_B,
+            omega_W = omega_roll
+        ) 
+
+        # Refernece torque: enough to balance wheel damping on driven wheels
+        motor_mask = model.params.motor.mask()
+        tau_w = model.params.wheels.b_w * omega_roll * motor_mask
+        tau_w = jnp.clip(tau_w, -tau_max, tau_max)
+
+        u_ref = AckermannCarInput(
+            delta=jnp.array(delta_ref,dtype=jnp.float32), 
+            tau_w=tau_w.astype(jnp.float32)
+        )
+
+        ref_states.append(x_ref)
+        ref_inputs.append(u_ref)
+
+        logs["p"].append(x_ref.p_W)
+        logs["yaw"].append(yaw_from_state(x_ref))
+        logs["psi_cmd"].append(delta_ref)
+        logs["delta"].append(delta_ref)
+        logs["tau_w"].append(tau_w)
+        logs["t"].append((N_settle + i) * dt)
+
+    ref_states = ref_states[:N_total]
+    ref_inputs = ref_inputs[:N_total]
+
     return ref_states, ref_inputs, logs, N_settle
 
 
@@ -395,8 +422,8 @@ def main():
     T_settle      = 1.5
     T_weave       = 10.0   # shorter than EKF test; MPC loop is slower
     v_cmd         = 1.0
-    psi_amplitude = 0.30   # ±0.30 rad ≈ ±17° heading oscillation
-    psi_frequency = 0.4    # Hz
+    sine_amplitude = 0.50   # ±0.30 rad ≈ ±17° heading oscillation
+    sine_frequency = 0.20    # Hz
 
     x0 = default_state(z0=0.10)
 
@@ -409,8 +436,8 @@ def main():
         T_settle=T_settle,
         T_weave=T_weave,
         v_cmd=v_cmd,
-        psi_amplitude=psi_amplitude,
-        psi_frequency=psi_frequency,
+        sine_amplitude=sine_amplitude,
+        sine_frequency=sine_frequency,
     )
     print(f"  done in {(time.perf_counter() - t0)*1e3:.1f} ms  "
           f"({len(ref_inputs)} steps, settle={N_settle})")
@@ -428,7 +455,7 @@ def main():
     print("G_weave [6:9, :] (velocity rows):\n", np.array(G_weave [6:9, :]))
 
     # ── Step 2: MPC hyperparameters ───────────────────────────────────────────
-    N_horizon = 10
+    N_horizon = 5
     mpc_params = default_mpc_params(N=N_horizon, dt=dt)
 
     n_avail = len(ref_inputs) - N_settle - N_horizon

@@ -181,8 +181,8 @@ def h_gyro(x: AckermannCarState) -> Array:
 
 
 def h_wheels(x: AckermannCarState) -> Array:
-    """Wheel encoders: measures wheel angular velocities."""
-    return x.omega_W  # (4,)
+    """Wheel encoders: measures wheel angular velocities of back wheels."""
+    return x.omega_W[2:]  # (2,)
 
 
 def make_h_gravity(g: float):
@@ -287,7 +287,7 @@ def run_ekf(
     R_gps_mat = R_gps_val * jnp.eye(3)
     R_gyro_mat = R_gyro_val * jnp.eye(3)
     R_gravity_mat = R_gravity_val * jnp.eye(3)
-    R_wheels_mat = R_wheels_val * jnp.eye(4)
+    R_wheels_mat = R_wheels_val * jnp.eye(2)
 
     h_gravity = make_h_gravity(model.params.chassis.g)
 
@@ -301,7 +301,7 @@ def run_ekf(
         ekf = ekf_update(ekf, z_gps_run[k], h_gps, R_gps_mat)
         ekf = ekf_update(ekf, z_gyro_run[k], h_gyro, R_gyro_mat)
         ekf = ekf_update(ekf, z_gravity_run[k], h_gravity, R_gravity_mat)
-        ekf = ekf_update(ekf, z_wheels_run[k], h_wheels, R_wheels_mat)
+        ekf = ekf_update(ekf, z_wheels_run[k,2:4], h_wheels, R_wheels_mat)
 
         return ekf, ekf
 
