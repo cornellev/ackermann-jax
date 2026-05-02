@@ -1,51 +1,49 @@
 """
-car.py — Ackermann kinematic model, Layer 1.
+car.py — Ackermann kinematic model, body-frame formulation.
 
-Pytree convention
------------------
-All structs are @dataclass + @jax.tree_util.register_dataclass.
+═══════════════════════════════════════════════════════════════════════════════
+State  (5-D, ordered pose-first then body-velocity)
+    x = [px, py, θ, v, ω]     shape (5,)
 
-Fields are split into two categories:
+    px, py  [m]      world-frame position
+    θ       [rad]    heading (yaw, CCW from +x)
+    v       [m/s]    body-frame forward speed   ← lateral speed ≡ 0 by construction
+    ω       [rad/s]  yaw rate
 
-  data fields   — JAX arrays; traced through jit/grad/vmap/jacfwd.
-                  Default: every field that is NOT marked static.
+Why body-frame velocity?
+────────────────────────
+  • No-slip structural:   v_lateral ≡ 0 is built into the state definition —
+                          no pseudo-measurement needed, no covariance leakage.
+  • Low-speed safe:       v → 0 is a scalar limit; H_speed = [0,0,0,1,0] is
+                          a constant row — zero singularity at standstill.
+  • Direct IMU coupling:  ω is measured directly by the z-axis rate gyro.
+  • SO3 upgrade path:     replace (θ, ω) with (q∈ℝ⁴, ω_B∈ℝ³); p_W and v
+                          keep the same role.
 
-  meta fields   — Python scalars / strings / tuples; treated as static
-                  (part of the JIT cache key, not traced).
-                  Marked with:  field(metadata=dict(static=True))
+Rotation convention
+───────────────────
+  R_BW ∈ SO(2)  maps body → world:
 
-This is the idiomatic JAX >= 0.4.36 pattern.  When upgrading to SO3 later,
-only CarState changes (replace theta: Array with q: Array of shape (4,));
-all integrator and linearise code is unchanged.
+      R_BW(θ) = [[cos θ,  −sin θ],
+                  [sin θ,   cos θ]]
 
-State
------
-CarState:
-    p_W   (2,)  world-frame position [m]
-    v_W   (2,)  world-frame velocity [m/s]
-    theta  ()   heading angle (yaw, CCW from +x) [rad]
+      v_world = R_BW @ [v, 0]ᵀ = [v·cos θ,  v·sin θ]
 
-Heading is explicit state -- not re-derived from arctan2(v_W) -- so the
-Jacobian is smooth at all speeds and a parked-with-heading initial condition
-is representable.  In the SO3 upgrade this field becomes a quaternion.
+Physics  (continuous time)
+──────────────────────────
+  ṗ  =  R_BW(θ) @ [v, 0]ᵀ   →  [v·cos θ,  v·sin θ]
+  θ̇  =  ω
+  v̇  =  a                          (longitudinal acceleration, control input)
+  ω̇  =  a · tan(δ) / L             d/dt of (v·tan δ / L) holding δ̇ ≈ 0
+                                    → changes in δ reach ω via the IMU gyro update
 
-Physics
--------
-Ackermann geometry gives heading rate:
-
-    theta_dot = v * tan(delta) / L        (v regularised by eps_v)
-
-Velocity dynamics from d/dt [v * cos th, v * sin th]:
-
-    v_dot_W = a * e_long + v * theta_dot * e_lat
-
-where e_long = [cos th, sin th]  (forward)
-      e_lat  = [-sin th, cos th]  (left)
+Control:  u = (a, δ)  —  [m/s²] longitudinal acc,  [rad] front-wheel steer angle
 
 EKF interface
--------------
-state_to_vec / vec_to_state  ->  flat (STATE_DIM,) = 5 vector
-linearise()  ->  (x_next_vec, F)  via jacfwd through the full RK4 step
+─────────────
+  state_to_vec / vec_to_state  →  flat (5,)  [px, py, θ, v, ω]
+  linearise()                  →  (x_next_vec, F)  via jacfwd through full RK4
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 from __future__ import annotations
@@ -58,139 +56,159 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Parameters
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 @jax.tree_util.register_dataclass
 @dataclass
 class AckermannParams:
     """
-    Physical / numerical parameters.
+    Physical parameters.  All fields are *static* (Python scalars, not JAX
+    arrays) — they become part of the JIT cache key, not traced through AD.
 
-    All fields are static (meta) -- Python floats, not JAX arrays.
-    Changing them triggers a JIT recompile, which is intentional: params are
-    fixed at model-construction time and are not differentiated through.
-    If you need to sweep params, pass them as separate JAX scalars into your
-    dynamics closure instead.
-
-    wheelbase : L    [m]    front-to-rear axle distance
-    mass      : m    [kg]   body mass (reserved for force layers)
-    eps_v     :      [m/s]  speed regularisation; gates theta_dot to zero
-                             at standstill without a hard divide-by-zero
+    wheelbase : L  [m]   front-to-rear axle distance
+    mass      : m  [kg]  body mass (reserved for future force / dynamics layers)
     """
     wheelbase : float = field(default=0.257, metadata=dict(static=True))
     mass      : float = field(default=1.5,   metadata=dict(static=True))
-    eps_v     : float = field(default=1e-3,  metadata=dict(static=True))
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # State
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 @jax.tree_util.register_dataclass
 @dataclass
 class CarState:
     """
-    Kinematic state of the car.
+    Body-frame kinematic state.
 
-    p_W   : (2,)  world-frame position [m]
-    v_W   : (2,)  world-frame velocity [m/s]
-    theta :  ()   heading angle [rad] -- explicit, not derived from v_W
+    p_W   : (2,)  world-frame position         [m]
+    theta :  ()   heading (yaw, CCW from +x)   [rad]
+    v     :  ()   body-frame forward speed      [m/s]   (v_lateral ≡ 0)
+    omega :  ()   yaw rate                      [rad/s]
 
-    All fields are data (non-static): JAX arrays traced by jit/grad/vmap.
+    All fields are data leaves (non-static): traced by jit / grad / vmap.
 
     SO3 upgrade: replace
-        theta : jax.Array  # shape ()
+        theta : jax.Array   shape ()
+        omega : jax.Array   shape ()
     with
-        q     : jax.Array  # shape (4,)  quaternion
-    and update body_axes() / xdot() accordingly.  Nothing else changes.
+        q     : jax.Array   shape (4,)  unit quaternion
+        omega : jax.Array   shape (3,)  body-frame angular velocity
+    and update body_axes() / xdot() accordingly.
     """
-    p_W   : jax.Array  # shape (2,)
-    v_W   : jax.Array  # shape (2,)
-    theta : jax.Array  # shape ()
+    p_W   : jax.Array   # shape (2,)
+    theta : jax.Array   # shape ()
+    v     : jax.Array   # shape ()
+    omega : jax.Array   # shape ()
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Control
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 @jax.tree_util.register_dataclass
 @dataclass
 class CarControl:
     """
-    a     :  ()  longitudinal acceleration [m/s^2]  (positive = forward)
+    a     :  ()  longitudinal acceleration  [m/s²]  (positive = forward)
     delta :  ()  front-wheel steering angle [rad]   (positive = left turn)
     """
-    a     : jax.Array  # shape ()
-    delta : jax.Array  # shape ()
+    a     : jax.Array   # shape ()
+    delta : jax.Array   # shape ()
 
 
-# ---------------------------------------------------------------------------
-# Rotation helpers  (SO2 now; swap for SO3 equivalents later)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Rotation helpers  (SO2 now; swap columns for SO3 later)
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def body_axes(theta: jax.Array) -> tuple[jax.Array, jax.Array]:
     """
-    Return (e_long, e_lat): the forward and left unit vectors in world frame.
+    Return (e_long, e_lat): forward and left unit vectors in world frame.
 
-        e_long = R(theta) @ [1, 0]  =  [ cos th,  sin th]
-        e_lat  = R(theta) @ [0, 1]  =  [-sin th,  cos th]
+        e_long = R_BW @ [1, 0]ᵀ  =  [ cos θ,  sin θ]
+        e_lat  = R_BW @ [0, 1]ᵀ  =  [−sin θ,  cos θ]
 
-    SO3 analogue: extract the first two columns of the rotation matrix R_WB.
+    SO3 analogue: first two columns of the body→world rotation matrix R_BW.
     """
     c, s = jnp.cos(theta), jnp.sin(theta)
-    e_long = jnp.array([ c,  s])
-    e_lat  = jnp.array([-s,  c])
-    return e_long, e_lat
+    return jnp.array([c, s]), jnp.array([-s, c])
 
 
-# ---------------------------------------------------------------------------
+def rotation_BW(theta: jax.Array) -> jax.Array:
+    """
+    Body-to-world rotation matrix  R_BW ∈ SO(2).
+
+        R_BW(θ) = [[cos θ,  −sin θ],
+                   [sin θ,   cos θ]]
+
+    Usage:  v_world = R_BW(θ) @ v_body
+    """
+    c, s = jnp.cos(theta), jnp.sin(theta)
+    return jnp.array([[c, -s],
+                      [s,  c]])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Continuous-time dynamics
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def xdot(state   : CarState,
          control : CarControl,
          params  : AckermannParams) -> CarState:
     """
-    Continuous-time Ackermann kinematic dynamics.
+    Continuous-time body-frame Ackermann kinematic dynamics.
 
     Returns a CarState whose fields are the time-derivatives of the
-    corresponding state fields.  This is a tangent vector with the same
-    pytree structure, which lets jax.tree.map work cleanly in the
-    integrators below.
+    corresponding state fields (a tangent vector in the same pytree shape).
 
-        d/dt p_W   = v_W
-        d/dt v_W   = a * e_long + v * theta_dot * e_lat
-        d/dt theta = theta_dot  =  v * tan(delta) / L
+        ṗ  =  R_BW(θ) @ [v, 0]ᵀ   →  [v·cos θ,  v·sin θ]
+        θ̇  =  ω
+        v̇  =  a
+        ω̇  =  a · tan(δ) / L      (d/dt of v·tan δ / L with δ̇ ≈ 0)
+
+    The body-frame body velocity [v, 0] makes the no-slip condition structural:
+    there is no lateral speed component in the state, so no pseudo-measurement
+    is needed to enforce the non-holonomic constraint.
     """
-    v_W   = state.v_W
+    v     = state.v
     theta = state.theta
+    omega = state.omega
     a     = control.a
     delta = control.delta
     L     = params.wheelbase
-    eps   = params.eps_v
 
-    # Regularised forward speed -- always >= eps, gates theta_dot to 0 smoothly
-    speed = jnp.sqrt(jnp.dot(v_W, v_W) + eps ** 2)
+    # Body-to-world rotation  R_BW ∈ SO(2)
+    R_BW = rotation_BW(theta)
 
-    e_long, e_lat = body_axes(theta)
+    # World-frame position rate: project body velocity [v, 0] into world frame
+    p_dot = R_BW @ jnp.array([v, 0.0])   # = [v·cos θ,  v·sin θ]
 
-    theta_dot = speed * jnp.tan(delta) / L
-
-    # Longitudinal acceleration + centripetal rotation of the velocity vector
-    v_dot = a * e_long + speed * theta_dot * e_lat
+    # Yaw-rate dynamics: ω̇ = a·tan(δ)/L
+    # Derived from d/dt(v·tan δ / L) holding δ̇ = 0.
+    # When δ changes (between timesteps), the discrepancy is absorbed by
+    # the IMU gyro measurement update; Q_ω provides the process slack.
+    omega_dot = a * jnp.tan(delta) / L
 
     return CarState(
-        p_W   = v_W,
-        v_W   = v_dot,
-        theta = theta_dot,
+        p_W   = p_dot,
+        theta = omega,       # θ̇ = ω
+        v     = a,           # v̇ = a
+        omega = omega_dot,
     )
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Integrators
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def step_euler(state   : CarState,
                control : CarControl,
@@ -208,8 +226,8 @@ def step_rk4(state   : CarState,
     """
     Classical RK4 step, control held constant over [t, t+dt].
 
-    Uses jax.tree.map throughout -- works for any pytree CarState,
-    including future SO3 versions with quaternion fields.
+    Uses jax.tree.map throughout — valid for any pytree CarState,
+    including future SO3 versions with quaternion + body-ω fields.
     """
     def f(s: CarState) -> CarState:
         return xdot(s, control, params)
@@ -228,30 +246,33 @@ def step_rk4(state   : CarState,
     )
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Flatten / unflatten  (EKF linear-algebra interface)
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
-STATE_DIM = 5  # [px, py, vx, vy, theta]
+STATE_DIM = 5  # [px, py, θ, v, ω]
 
 
 def state_to_vec(state: CarState) -> jax.Array:
-    """Pack CarState into a flat (5,) vector: [px, py, vx, vy, theta]."""
-    return jnp.concatenate([state.p_W, state.v_W, state.theta[jnp.newaxis]])
+    """Pack CarState into a flat (5,) vector: [px, py, θ, v, ω]."""
+    return jnp.array([state.p_W[0], state.p_W[1],
+                      state.theta, state.v, state.omega])
 
 
 def vec_to_state(vec: jax.Array) -> CarState:
     """Unpack a flat (5,) vector back to CarState."""
     return CarState(
         p_W   = vec[0:2],
-        v_W   = vec[2:4],
-        theta = vec[4],
+        theta = vec[2],
+        v     = vec[3],
+        omega = vec[4],
     )
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # EKF linearisation
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def linearise(state   : CarState,
               control : CarControl,
@@ -260,12 +281,25 @@ def linearise(state   : CarState,
     """
     Propagate the state and compute the discrete-time Jacobian F.
 
-    Uses forward-mode autodiff (jacfwd) through the full RK4 step.
-    No analytic Jacobian required -- the pytree dynamics define everything.
+    Uses jacfwd through the full RK4 step — no analytic Jacobian needed.
+
+    The Jacobian has the approximate structure (at small dt):
+
+        ∂x'/∂x ≈ I + dt · J_f   where J_f = ∂ẋ/∂x
+
+        J_f =        px  py   θ         v         ω
+              px  [  0   0  −v·sinθ   cosθ       0  ]
+              py  [  0   0   v·cosθ   sinθ       0  ]
+              θ   [  0   0    0         0         1  ]
+              v   [  0   0    0         0         0  ]
+              ω   [  0   0    0         0         0  ]
+
+    The position-heading and position-speed cross-terms are non-trivial
+    during turns — exactly the terms that jacfwd captures correctly.
 
     Returns
     -------
-    x_next : (STATE_DIM,)            propagated state as a flat vector
+    x_next : (STATE_DIM,)            propagated state as flat vector
     F      : (STATE_DIM, STATE_DIM)  Jacobian  d(x_next) / d(x_k)
     """
     def propagate(vec: jax.Array) -> jax.Array:
