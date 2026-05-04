@@ -438,7 +438,7 @@ def plot_ekf_vs_truth(
     for i, name in enumerate(wheel_names):
         axes[i, 0].plot(t, truth_omega[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_omega[:, i], "r--", label="EKF")
-        if m_wheels is not None:
+        if m_wheels is not None and i >= 2:
             axes[i, 0].scatter(t_s, m_wheels[:, i], **meas_kw)
         axes[i, 0].set_ylabel(f"ω_{name} [rad/s]")
         axes[i, 0].legend(fontsize=8)
