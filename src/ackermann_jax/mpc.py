@@ -46,7 +46,9 @@ from .errorDyn import (
     state_difference,
 )
 
-INPUT_DIM = 5  # [delta, tau_w[0..3]]
+INPUT_DIM = 5  # Full command layout: [delta, tau_w[0..3]]
+DECISION_DIM = 3  # MPC decision layout: [delta, tau_RL, tau_RR]
+_DECISION_COLS = jnp.array([0, 3, 4])
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +67,17 @@ def _unpack_control(u_flat: Array) -> AckermannCarInput:
         delta = u_flat[0].astype(jnp.float32),
         tau_w=u_flat[1:5].astype(jnp.float32)
     )
+
+
+def _pack_decision_control_batch(u_ref: AckermannCarInput) -> Array:
+    """Batched AckermannCarInput -> (..., 3) decision vector."""
+    return jnp.concatenate([u_ref.delta[..., None], u_ref.tau_w[..., 2:4]], axis=-1)
+
+
+def _expand_decision_batch(u_dec: Array) -> Array:
+    """Expand (..., 3) [delta, tau_RL, tau_RR] to (..., 5) full command layout."""
+    front_tau = jnp.zeros_like(u_dec[..., 1:3])
+    return jnp.concatenate([u_dec[..., 0:1], front_tau, u_dec[..., 1:3]], axis=-1)
 
 # Input Jacobian 
 def compute_G(
@@ -148,23 +161,25 @@ def _build_prediction_matrices_np(
     N, nx = Fs.shape[:2]
     nu = Gs.shape[2]
 
-    # Phi
-    Phi = jnp.zeros((N * nx, nx), dtype=jnp.float64)
-    F_prod = jnp.eye(nx, dtype=jnp.float64)
-    for k in range(N):
-        F_prod = Fs[k] @ F_prod
-        Phi = Phi.at[k * nx:(k + 1) * nx].set(F_prod)
+    dtype = Fs.dtype
 
-    # Theta  (block-lower-triangular)
-    Theta = jnp.zeros((N * nx, N * nu), dtype=jnp.float64)
-    for j in range(N):
-        col = Gs[j].copy()                                  # (nx, nu)
-        Theta = Theta.at[j * nx:(j + 1) * nx, j * nu:(j + 1) * nu].set(col)
-        for i in range(j + 1, N):
-            col = Fs[i] @ col
-            Theta = Theta.at[i * nx:(i + 1) * nx, j * nu:(j + 1) * nu].set(col)
+    def phi_step(F_prod, Fk):
+        F_prod_next = Fk @ F_prod
+        return F_prod_next, F_prod_next
 
-    return Phi, Theta
+    _, Phi_blocks = jax.lax.scan(phi_step, jnp.eye(nx, dtype=dtype), Fs)
+
+    def theta_step(cols, args):
+        Fk, Gk, k = args
+        cols_next = jax.vmap(lambda c: Fk @ c)(cols)
+        cols_next = cols_next.at[k].set(Gk)
+        return cols_next, cols_next
+
+    cols0 = jnp.zeros((N, nx, nu), dtype=dtype)
+    _, col_history = jax.lax.scan(theta_step, cols0, (Fs, Gs, jnp.arange(N)))
+    Theta = col_history.transpose(0, 2, 1, 3).reshape(N * nx, N * nu)
+
+    return Phi_blocks.reshape(N * nx, nx), Theta
 
 
 def build_prediction_matrices(
@@ -206,7 +221,8 @@ def build_prediction_matrices(
         F_prod_next = Fk @ F_prod
         return F_prod_next, F_prod_next
 
-    _, Phi = jax.lax.scan(phi_step, jnp.eye(nx, dtype=jnp.float32),Fs)
+    dtype = Fs.dtype
+    _, Phi = jax.lax.scan(phi_step, jnp.eye(nx, dtype=dtype), Fs)
     Phi = Phi.reshape(N * nx, nx)
 
     # ── Theta via scan: carry is (N, nx, nu) array of active column vectors
@@ -217,7 +233,7 @@ def build_prediction_matrices(
         cols_next = cols_next.at[k].set(Gk)  # Insert G_k into slot k
         return cols_next, cols_next
 
-    cols0 = jnp.zeros((N, nx, nu), dtype=jnp.float32)
+    cols0 = jnp.zeros((N, nx, nu), dtype=dtype)
     ks = jnp.arange(N)
     _, col_history = jax.lax.scan(theta_step, cols0, (Fs, Gs, ks))
     # col_history[k, j] = Theta column j at row k  → need lower-triangular mask
@@ -243,18 +259,18 @@ class MPCParams:
         [9:12]  dw_B      angular velocity error      [rad/s]
         [12:16] dω_W      wheel speed error           [rad/s]
  
-    Input layout (INPUT_DIM = 5):
+    Internal decision layout (DECISION_DIM = 3):
         [0]     δ         steering angle              [rad]
-        [1:5]   τ_w       wheel torques               [N·m]
+        [1:3]   τ_RL/RR   rear wheel torques          [N·m]
     """
     N:      int     # prediction horizon (number of steps)
     dt:     float   # time step [s]
     Q:      Array   # (16, 16)  running state-error weight     Q  ≽ 0
-    R:      Array   # (5,  5)   input-deviation weight         R  ≻ 0
+    R:      Array   # (3,  3)   input-deviation weight         R  ≻ 0
     Pf:     Array   # (16, 16)  terminal state weight          Pf ≽ 0
-    u_min:  Optional[Array] = None   # (5,) absolute input lower bound
-    u_max:  Optional[Array] = None   # (5,) absolute input upper bound
-    du_max: Optional[Array] = None   # (5,) per-step slew-rate limit
+    u_min:  Optional[Array] = None   # (3,) absolute decision lower bound
+    u_max:  Optional[Array] = None   # (3,) absolute decision upper bound
+    du_max: Optional[Array] = None   # (3,) per-step slew-rate limit
 
     def tree_flatten(self):
         children = [jnp.asarray(self.dt), self.Q, self.R, self.Pf]
@@ -303,12 +319,12 @@ class MPCState:
     """
     x_ref:  List[AckermannCarState]   # length N+1  — nominal states
     u_ref:  List[AckermannCarInput]   # length N    — nominal inputs
-    u_warm: Optional[Array] = None    # (N·INPUT_DIM,) QP warm-start
+    u_warm: Optional[Array] = None    # (N·DECISION_DIM,) QP warm-start
     solver: Optional[OSQP] = None
 
 def init_mpc_state(x_ref, u_ref, params: MPCParams) -> MPCState:
     N = params.N
-    nu = INPUT_DIM
+    nu = DECISION_DIM
     n_constr = 0
     if params.u_min is not None or params.u_max is not None:
         n_constr += N * nu
@@ -329,8 +345,8 @@ def init_mpc_state(x_ref, u_ref, params: MPCParams) -> MPCState:
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class MPCResult:
-    u_opt:   Array   # (N, 5)    optimal absolute inputs  ū_k + δu*_k
-    du_opt:  Array   # (N, 5)    optimal input deviations δu*_k
+    u_opt:   Array   # (N, 5)    optimal absolute full inputs ū_k + δu*_k
+    du_opt:  Array   # (N, 5)    optimal full input deviations δu*_k
     x_pred:  Array   # (N+1, 16) predicted error-state trajectory (incl. dx₀)
     cost:    Array   # evaluated QP objective
     solved:  Array   # False if OSQP failed/unavailable and fallback was used
@@ -370,7 +386,7 @@ def _build_qp(
     Returns (P, q, A, l, u_c) - last three are None if no constraints are active.
     """
     N = params.N
-    nu = INPUT_DIM
+    nu = params.R.shape[0]
 
     TtQ = Theta.T @ Q_bar
     H = TtQ @ Theta + R_bar
@@ -497,6 +513,22 @@ def _pack_control_batch(u_ref: AckermannCarInput) -> Array:
     return jnp.concatenate([u_ref.delta[..., None], u_ref.tau_w], axis=-1)
 
 
+def _diagonal_cost_terms(
+    Theta: Array,
+    Phi_dx0: Array,
+    Q: Array,
+    Pf: Array,
+    R: Array,
+    N: int,
+) -> Tuple[Array, Array]:
+    qbar_diag = jnp.concatenate([jnp.diag(Q)] * (N - 1) + [jnp.diag(Pf)])
+    rbar_diag = jnp.tile(jnp.diag(R), N)
+    Theta_Q = Theta * qbar_diag[:, None]
+    H = Theta.T @ Theta_Q + jnp.diag(rbar_diag)
+    f = Theta_Q.T @ Phi_dx0
+    return H, f
+
+
 @jax.jit
 def mpc_step_batched(
     model: AckermannCarModel,
@@ -513,11 +545,10 @@ def mpc_step_batched(
     with leading dimension N.  This avoids Python list handling in the
     performance-critical path and can be called from lax.scan.
     """
-    del u_warm
     N = params.N
     dt = params.dt
     nx = ERROR_DIM
-    nu = INPUT_DIM
+    nu = DECISION_DIM
 
     dx0 = pack_error_state(state_difference(jax.tree.map(lambda a: a[0], x_ref), x_current))
     x_ref_linearization = jax.tree.map(lambda a: a[:N], x_ref)
@@ -527,7 +558,7 @@ def mpc_step_batched(
     )
 
     Fs = Fs_jax.astype(jnp.float64)
-    Gs = Gs_jax.astype(jnp.float64)
+    Gs = Gs_jax[..., _DECISION_COLS].astype(jnp.float64)
     dx0_64 = dx0.astype(jnp.float64)
 
     Phi, Theta = _build_prediction_matrices_np(Fs, Gs)
@@ -535,16 +566,13 @@ def mpc_step_batched(
     Q = params.Q.astype(jnp.float64)
     Pf = params.Pf.astype(jnp.float64)
     R = params.R.astype(jnp.float64)
-    Q_bar = block_diag_jax([Q] * (N - 1) + [Pf])
-    R_bar = block_diag_jax([R] * N)
 
-    TtQ = Theta.T @ Q_bar
-    H = TtQ @ Theta + R_bar
-    f = TtQ @ (Phi @ dx0_64)
+    Phi_dx0 = Phi @ dx0_64
+    H, f = _diagonal_cost_terms(Theta, Phi_dx0, Q, Pf, R, N)
     P = H + H.T + 1e-8 * jnp.eye(N * nu, dtype=jnp.float64)
     q = 2.0 * f
 
-    u_nom_flat = _pack_control_batch(u_ref).reshape(N * nu).astype(jnp.float64)
+    u_nom_dec_flat = _pack_decision_control_batch(u_ref).reshape(N * nu).astype(jnp.float64)
     A_list, l_list, u_list = [], [], []
 
     if params.u_min is not None or params.u_max is not None:
@@ -561,8 +589,8 @@ def mpc_step_batched(
             else jnp.full((nu,), jnp.inf, dtype=jnp.float64),
             N,
         )
-        l_list.append(lo - u_nom_flat)
-        u_list.append(hi - u_nom_flat)
+        l_list.append(lo - u_nom_dec_flat)
+        u_list.append(hi - u_nom_dec_flat)
 
     if params.du_max is not None:
         D = jnp.eye(N * nu, dtype=jnp.float64) - jnp.eye(N * nu, k=-nu, dtype=jnp.float64)
@@ -590,10 +618,12 @@ def mpc_step_batched(
 
     DU_64 = sol.params.primal
     DU = DU_64.astype(jnp.float32)
-    du_opt = DU.reshape(N, nu)
-    u_opt = du_opt + u_nom_flat.astype(jnp.float32).reshape(N, nu)
+    du_dec = DU.reshape(N, nu)
+    u_dec = du_dec + u_nom_dec_flat.astype(jnp.float32).reshape(N, nu)
+    du_opt = _expand_decision_batch(du_dec)
+    u_opt = _expand_decision_batch(u_dec)
 
-    X_pred = (Phi @ dx0_64 + Theta @ DU_64).reshape(N, nx).astype(jnp.float32)
+    X_pred = (Phi_dx0 + Theta @ DU_64).reshape(N, nx).astype(jnp.float32)
     x_pred = jnp.concatenate([dx0.astype(jnp.float32)[None, :], X_pred], axis=0)
     cost = (0.5 * DU_64 @ P @ DU_64 + q @ DU_64).astype(jnp.float32)
     solved = sol.state.status == 1
@@ -631,7 +661,7 @@ def mpc_step(
                           (update x_ref / u_ref from your planner first)
     """
     N  = params.N
-    nu = INPUT_DIM
+    nu = DECISION_DIM
 
     x_ref_batch = jax.tree.map(lambda *xs: jnp.stack(xs), *mpc_state.x_ref[: N + 1])
     u_ref_batch = jax.tree.map(lambda *us: jnp.stack(us), *mpc_state.u_ref[:N])
@@ -685,7 +715,7 @@ def default_mpc_params(N: int = 20, dt: float = 0.05) -> MPCParams:
     Pf = 10.0 * Q            # terminal: heavier than running; swap for DARE
  
     r_diag = jnp.array(
-        [1.5,  0.03, 0.03, 0.03, 0.03],   # delta, tau_w x4
+        [1.5, 0.03, 0.03],   # delta, tau_RL, tau_RR
         dtype=jnp.float32,
     )
     R = jnp.diag(r_diag)
@@ -693,13 +723,14 @@ def default_mpc_params(N: int = 20, dt: float = 0.05) -> MPCParams:
     # Physical limits from car.py:
     #   delta_max = 0.35 rad  (map_heading_to_steering)
     #   tau_max context-dependent; 0.5 N·m is conservative for this scale
-    u_min = jnp.array([-0.35, -0.5, -0.5, -0.5, -0.5], dtype=jnp.float32)
-    u_max = jnp.array([ 0.35,  0.5,  0.5,  0.5,  0.5], dtype=jnp.float32)
+    #   rear torques are throttle-only, so negative absolute torque is disallowed
+    u_min = jnp.array([-0.35, 0.0, 0.0], dtype=jnp.float32)
+    u_max = jnp.array([ 0.35,  0.5,  0.5], dtype=jnp.float32)
  
     # Per-step slew limits:
     #   steering: 0.05 rad/step = 1 rad/s at 20 Hz
     #   torque:   0.1 N·m/step  = 2 N·m/s at 20 Hz
-    du_max = jnp.array([0.04, 0.2, 0.2, 0.2, 0.2], dtype=jnp.float32)
+    du_max = jnp.array([0.04, 0.2, 0.2], dtype=jnp.float32)
  
     return MPCParams(
         N=N,

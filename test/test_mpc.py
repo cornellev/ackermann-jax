@@ -59,6 +59,7 @@ from ackermann_jax import (
     state_difference,
 )
 from ackermann_jax.mpc import (
+    DECISION_DIM,
     MPCParams,
     MPCResult,
     default_mpc_params,
@@ -266,7 +267,7 @@ def run_mpc(
             ref_input_batch.tau_w[start_idx],
         ]
     ).astype(jnp.float32)
-    warm0 = jnp.zeros((N * 5,), dtype=jnp.float32)
+    warm0 = jnp.zeros((N * DECISION_DIM,), dtype=jnp.float32)
     key0 = rng_key if rng_key is not None else jax.random.PRNGKey(0)
 
     def _window(tree, start, length):
@@ -540,14 +541,13 @@ def main():
     print(f"dx0[0:3] (position error, should be ~[0, -0.1, 0]): {dx0[0:3]}")
 
     print("Check example MPC solve and see if position error lands in zeroed rows")
-    N, nx, nu = mpc_params.N, 16, 5
+    N, nx, nu = mpc_params.N, 16, DECISION_DIM
     Fs_np = np.stack([np.array(_compute_FG(model, ref_states[N_settle+k], ref_inputs[N_settle+k], dt)[0], dtype=np.float64) for k in range(N)])
-    Gs_np = np.stack([np.array(_compute_FG(model, ref_states[N_settle+k], ref_inputs[N_settle+k], dt)[1], dtype=np.float64) for k in range(N)])
+    Gs_np = np.stack([np.array(_compute_FG(model, ref_states[N_settle+k], ref_inputs[N_settle+k], dt)[1][:, [0, 3, 4]], dtype=np.float64) for k in range(N)])
     Phi, Theta = _build_prediction_matrices_np(Fs_np, Gs_np)
 
     Q_np  = np.array(mpc_params.Q,  dtype=np.float64)
     Pf_np = np.array(mpc_params.Pf, dtype=np.float64)
-    R_np  = np.array(mpc_params.R,  dtype=np.float64)
     Q_bar = sla.block_diag(*([Q_np] * (N-1) + [Pf_np]))
 
     dx0_np = np.array(pack_error_state(state_difference(ref_states[N_settle],x_pert)), dtype=np.float64)

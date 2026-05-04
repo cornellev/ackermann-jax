@@ -41,6 +41,7 @@ from ackermann_jax import (
     default_state,
 )
 from ackermann_jax.mpc import (
+    DECISION_DIM,
     INPUT_DIM,
     MPCParams,
     MPCState,
@@ -76,8 +77,9 @@ def _array_summary(name, arr, indent=4):
           f"norm={np.linalg.norm(arr):.4g}  "
           f"finite={np.all(np.isfinite(arr))}")
 
-NX = ERROR_DIM   # 16
-NU = INPUT_DIM   # 5
+NX = ERROR_DIM      # 16
+FULL_NU = INPUT_DIM # 5
+NU = DECISION_DIM   # 3
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Setup — build model + reference trajectory (minimal, 5 s weave at 20 Hz)
@@ -248,11 +250,11 @@ DOF_LABELS = [
     "dω_x", "dω_y", "dω_z",       # 9-11
     "dΩ_0", "dΩ_1", "dΩ_2","dΩ_3",# 12-15
 ]
-INPUT_LABELS = ["δ", "τ0", "τ1", "τ2", "τ3"]
+INPUT_LABELS = ["δ", "τ_RL", "τ_RR"]
 
 for label, kidx in [("settle boundary", k_settle), ("mid-weave", k_weave)]:
-    _, G = _compute_FG(model, ref_states[kidx], ref_inputs[kidx], dt)
-    G_np = np.array(G, dtype=np.float64)
+    _, G_full = _compute_FG(model, ref_states[kidx], ref_inputs[kidx], dt)
+    G_np = np.array(G_full[:, [0, 3, 4]], dtype=np.float64)
     print(f"\n  [{label}]  k={kidx}   G shape={G_np.shape}")
     print(f"    G norm : {np.linalg.norm(G_np):.4f}")
     print(f"    G finite: {np.all(np.isfinite(G_np))}")
@@ -282,12 +284,14 @@ Fs_np = np.stack([
     for k in range(N)
 ])
 Gs_np = np.stack([
-    np.array(_compute_FG(model, ref_states[k_weave+k], ref_inputs[k_weave+k], dt)[1],
+    np.array(_compute_FG(model, ref_states[k_weave+k], ref_inputs[k_weave+k], dt)[1][:, [0, 3, 4]],
              dtype=np.float64)
     for k in range(N)
 ])
 
 Phi, Theta = _build_prediction_matrices_np(Fs_np, Gs_np)
+Phi = np.array(Phi, dtype=np.float64)
+Theta = np.array(Theta, dtype=np.float64)
 
 _array_summary("Phi  ", Phi)
 _array_summary("Theta", Theta)
