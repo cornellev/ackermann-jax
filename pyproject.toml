@@ -16,6 +16,9 @@ dependencies = [
   "addcopyfighandler>=3.2.4,<4"
 ]
 
+[project.scripts]
+ekf_ros_node = "ackermann_jax.ekf_ros_node:main"
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
@@ -44,8 +47,24 @@ ruff = ">=0.15.2,<0.16"
 pyqt = ">=5.15.11,<6"
 ros-humble-rclpy = "*"
 ros-humble-nav-msgs = "*"
-osqp = ">=1.1.1,<2"
-jaxopt = ">=0.8.4,<0.9"
+ros-humble-sensor-msgs = "*"
+ros-humble-ackermann-msgs = "*"
+ros-humble-geometry-msgs = "*"
+ros-humble-ros-base = "*"
+
+[tool.pixi.tasks]
+# Register ackermann_jax in the ament resource index so `ros2 run` can find it.
+# Run once after `pixi install`: pixi run register-ros
+register-ros = """
+mkdir -p $CONDA_PREFIX/share/ament_index/resource_index/packages &&
+touch $CONDA_PREFIX/share/ament_index/resource_index/packages/ackermann_jax &&
+mkdir -p $CONDA_PREFIX/share/ackermann_jax &&
+cp package.xml $CONDA_PREFIX/share/ackermann_jax/package.xml &&
+mkdir -p $CONDA_PREFIX/lib/ackermann_jax &&
+printf '#!/usr/bin/env python3\nfrom ackermann_jax.ekf_ros_node import main\nmain()\n' > $CONDA_PREFIX/lib/ackermann_jax/ekf_ros_node &&
+chmod +x $CONDA_PREFIX/lib/ackermann_jax/ekf_ros_node &&
+echo 'ackermann_jax registered in ament index at' $CONDA_PREFIX
+"""
 
 [tool.pixi.pypi-dependencies]
 ackermann-jax = {path = "./", editable = true}
