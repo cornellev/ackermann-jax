@@ -63,7 +63,7 @@ cuda-version = "12.6.*"
 [tool.pixi.feature.gpu.pypi-dependencies]
 jax = {version = "*", extras = ["cuda12"]}
 
-# add dependencies for ros-test envrionment
+# add dependencies for ros-test environment
 [tool.pixi.feature.ros.dependencies]
 ros-humble-rclpy = "*"
 ros-humble-nav-msgs = "*"
