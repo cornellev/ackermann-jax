@@ -211,3 +211,5 @@ __marimo__/
 
 # test/
 ekf_step_trace/
+.DS_Store
+# remove DS store files ^^

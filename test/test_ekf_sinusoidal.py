@@ -164,7 +164,7 @@ def h_gyro(x: AckermannCarState) -> Array:
 
 
 def h_wheels(x: AckermannCarState) -> Array:
-    return x.omega_W
+    return x.omega_W[2:4]
 
 
 def make_h_gravity(g: float):
@@ -222,7 +222,7 @@ def run_ekf(
     R_gps_mat     = R_gps_val  * jnp.eye(3)
     R_gyro_mat    = R_gyro_val * jnp.eye(3)
     R_gravity_mat = R_gravity_val * jnp.eye(3)
-    R_wheels_mat  = R_wheels_val  * jnp.eye(4)
+    R_wheels_mat  = R_wheels_val  * jnp.eye(2)
 
     h_gravity = make_h_gravity(model.params.chassis.g)
 
@@ -235,7 +235,7 @@ def run_ekf(
         ekf = ekf_update(ekf, z_gps_run[k],     h_gps,     R_gps_mat)
         ekf = ekf_update(ekf, z_gyro_run[k],    h_gyro,    R_gyro_mat)
         ekf = ekf_update(ekf, z_gravity_run[k], h_gravity, R_gravity_mat)
-        ekf = ekf_update(ekf, z_wheels_run[k],  h_wheels,  R_wheels_mat)
+        ekf = ekf_update(ekf, z_wheels_run[k, 2:4],  h_wheels,  R_wheels_mat)
         return ekf, ekf
 
     N_run = z_gps_run.shape[0]
@@ -352,7 +352,7 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
     for i, name in enumerate(["FL", "FR", "RL", "RR"]):
         axes[i, 0].plot(t, truth_om[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_om[:, i],   "r--", label="EKF")
-        if m_wheels is not None:
+        if m_wheels is not None and i >= 2:
             axes[i, 0].scatter(t_s, m_wheels[:, i], **meas_kw)
         axes[i, 0].set_ylabel(f"ω_{name} [rad/s]")
         axes[i, 0].legend(fontsize=8)
@@ -450,7 +450,7 @@ def main():
     R_gps     = 2.25   # GPS position  σ ≈ 1.5  m
     R_gyro    = 1e-4   # gyroscope     σ ≈ 0.01 rad/s
     R_gravity = 1e-2   # accel/gravity σ ≈ 0.1  m/s²
-    R_wheels  = 1e-4   # wheel encoder σ ≈ 0.01 rad/s
+    R_wheels  = 0.25   # wheel encoder σ ≈ 0.01 rad/s
 
     key = jax.random.PRNGKey(42)
 
@@ -466,9 +466,11 @@ def main():
     print(f"  GPS       σ = {jnp.sqrt(R_gps):.4f} m")
     print(f"  Gyro      σ = {jnp.sqrt(R_gyro):.4f} rad/s")
     print(f"  Gravity   σ = {jnp.sqrt(R_gravity):.4f} m/s²")
-    print(f"  Wheels    σ = {jnp.sqrt(R_wheels):.4f} rad/s")
+    print(f"  Rear Wheels    σ = {jnp.sqrt(R_wheels):.4f} rad/s")
 
     Q  = 1e-6 * jnp.eye(ERROR_DIM)
+    Q = Q.at[12,12].set(1e-2) # omega_FL
+    Q = Q.at[13,13].set(1e-2) # omega_FR
     P0 = 1e-4 * jnp.eye(ERROR_DIM)
     P0 *= 2 # change prior to be larger
 

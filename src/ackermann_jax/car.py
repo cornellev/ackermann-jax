@@ -121,7 +121,21 @@ class AckermannCarModel:
         tau_B = R.T @ tau_W
 
         tau_cmd = p.motor.mask() * u.tau_w
-        domega_w = (tau_cmd - p.geom.wheel_radius * Fx - p.wheels.b_w * omega_w) / p.wheels.I_w
+        # domega_w = (tau_cmd - p.geom.wheel_radius * Fx - p.wheels.b_w * omega_w) / p.wheels.I_w
+        omega_roll = v_t / p.geom.wheel_radius
+
+        tau_front = 0.20
+        domega_passive = (omega_roll - omega_w) / tau_front
+
+        domega_drive = (
+            tau_cmd
+            - p.geom.wheel_radius * Fx
+            - p.wheels.b_w * omega_w
+        ) / p.wheels.I_w
+
+        motor_mask = p.motor.mask()
+        passive_mask = 1.0 - motor_mask
+        domega_w = motor_mask * domega_drive + passive_mask * domega_passive
 
         g_W = jnp.array([0.0, 0.0, -p.chassis.g],dtype=jnp.float32)
         dv_W = (F_W / p.chassis.mass) + g_W
@@ -151,11 +165,13 @@ class AckermannCarModel:
     ) -> AckermannCarState:
         if method == "euler":
             xdot = self.xdot(x,u)
-            return self._integrate_euler(x,xdot,dt)
+            x_next = self._integrate_euler(x,xdot,dt)
         if method == "semi_implicit_euler":
             xdot = self.xdot(x,u)
-            return self._integrate_semi_implicit(x,xdot,dt)
-        raise ValueError(f"Unknown integration method {method}")
+            x_next = self._integrate_semi_implicit(x,xdot,dt)
+        else:
+            raise ValueError(f"Unknown integration method {method}")
+        return x_next
 
     def map_velocity_to_wheel_torques(
         self,
