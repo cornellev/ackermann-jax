@@ -70,6 +70,8 @@ ros-humble-nav-msgs = "*"
 ros-humble-launch-ros = "*"
 ros-humble-ros2launch = "*"
 ros-humble-ros2topic = "*"
+ros-humble-ackermann-msgs = "*"
+ros-humble-sensor-msgs = "*"
 
 [tool.pixi.feature.cpu.dependencies]
 jax = "*"

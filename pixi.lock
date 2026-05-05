@@ -2054,6 +2054,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/rhash-1.4.6-hb9d3cd8_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rod-0.5.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-ackermann-msgs-2.0.2-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-action-msgs-1.2.2-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-ament-cmake-1.3.13-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-ament-cmake-core-1.3.13-np2py312h2ed9cc7_15.conda
@@ -2151,6 +2152,7 @@ environments:
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-rosidl-typesupport-introspection-cpp-3.1.8-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-rpyutils-0.2.2-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-rti-connext-dds-cmake-module-0.11.6-np2py312h2ed9cc7_15.conda
+      - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-sensor-msgs-4.9.1-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-spdlog-vendor-1.3.1-np2py312h918b84f_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-std-msgs-4.9.1-np2py312h2ed9cc7_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-tracetools-4.1.2-np2py312h2ed9cc7_15.conda
@@ -2505,6 +2507,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/rhash-1.4.6-h86ecc28_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rod-0.5.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-ackermann-msgs-2.0.2-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-action-msgs-1.2.2-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-ament-cmake-1.3.13-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-ament-cmake-core-1.3.13-np2py312h61f2ce4_15.conda
@@ -2602,6 +2605,7 @@ environments:
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-rosidl-typesupport-introspection-cpp-3.1.8-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-rpyutils-0.2.2-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-rti-connext-dds-cmake-module-0.11.6-np2py312h61f2ce4_15.conda
+      - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-sensor-msgs-4.9.1-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-spdlog-vendor-1.3.1-np2py312ha677571_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-std-msgs-4.9.1-np2py312h61f2ce4_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-tracetools-4.1.2-np2py312h61f2ce4_15.conda
@@ -2919,6 +2923,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/rhash-1.4.6-h6e16a3a_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rod-0.5.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-ackermann-msgs-2.0.2-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-action-msgs-1.2.2-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-ament-cmake-1.3.13-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-ament-cmake-core-1.3.13-np2py312h03c2032_15.conda
@@ -3016,6 +3021,7 @@ environments:
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-rosidl-typesupport-introspection-cpp-3.1.8-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-rpyutils-0.2.2-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-rti-connext-dds-cmake-module-0.11.6-np2py312h03c2032_15.conda
+      - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-sensor-msgs-4.9.1-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-spdlog-vendor-1.3.1-np2py312he6ade45_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-std-msgs-4.9.1-np2py312h03c2032_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-tracetools-4.1.2-np2py312h03c2032_15.conda
@@ -3308,6 +3314,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/rhash-1.4.6-h5505292_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-15.0.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rod-0.5.0-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-ackermann-msgs-2.0.2-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-action-msgs-1.2.2-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-ament-cmake-1.3.13-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-ament-cmake-core-1.3.13-np2py312h50b1e4c_15.conda
@@ -3405,6 +3412,7 @@ environments:
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-rosidl-typesupport-introspection-cpp-3.1.8-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-rpyutils-0.2.2-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-rti-connext-dds-cmake-module-0.11.6-np2py312h50b1e4c_15.conda
+      - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-sensor-msgs-4.9.1-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-spdlog-vendor-1.3.1-np2py312h13c16a8_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-std-msgs-4.9.1-np2py312h50b1e4c_15.conda
       - conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-tracetools-4.1.2-np2py312h50b1e4c_15.conda
@@ -3529,7 +3537,7 @@ packages:
 - pypi: ./
   name: ackermann-jax
   version: 0.0.1
-  sha256: 629dedff9e9cdef55afbdab394010495bb2f6a40dfc3538ea1eb69d0e484e74c
+  sha256: 6d89da5a23e6fc368c27e460c29ee06146b101da08014de7af8b1b810aad0f84
   requires_dist:
   - jax
   - jaxlie
@@ -18172,6 +18180,75 @@ packages:
   - pkg:pypi/rod?source=hash-mapping
   size: 43996
   timestamp: 1774867365665
+- conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-ackermann-msgs-2.0.2-np2py312h2ed9cc7_15.conda
+  sha256: 415ffea05c089ce4be6698d019b1e4495e624610798a46a0a2b0c6234a631e37
+  md5: 0fcbbcb9ad2796da2093b107934d7794
+  depends:
+  - python
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  - libstdcxx >=14
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+  license: BSD-3-Clause
+  size: 84606
+  timestamp: 1773562353717
+- conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-ackermann-msgs-2.0.2-np2py312h61f2ce4_15.conda
+  sha256: 4d90c8ce081dc48e11a387b671a6fc82393dae3a45e7589e4379744325d59448
+  md5: 628574f04a032f2b42e64cf115554a96
+  depends:
+  - python
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - libstdcxx >=14
+  - libgcc >=14
+  - python_abi 3.12.* *_cp312
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  - numpy >=1.23,<3
+  license: BSD-3-Clause
+  size: 88018
+  timestamp: 1773556516567
+- conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-ackermann-msgs-2.0.2-np2py312h03c2032_15.conda
+  sha256: 83538c3b1816c15f5aeeee91125a18941cdffb0652fdbb77d342c5018c473754
+  md5: ac2f752e4fd61123b3f5c29011b997af
+  depends:
+  - python
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - libcxx >=18
+  - __osx >=10.13
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  license: BSD-3-Clause
+  size: 80658
+  timestamp: 1773693191379
+- conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-ackermann-msgs-2.0.2-np2py312h50b1e4c_15.conda
+  sha256: c968ab00e1e950fd2bf7c41f86e9a2d347d466251867890e6a54107d36476815
+  md5: 5d4659b01d63205264cd0c9780e7b0b9
+  depends:
+  - python
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - __osx >=11.0
+  - libcxx >=18
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  - numpy >=1.23,<3
+  - python_abi 3.12.* *_cp312
+  license: BSD-3-Clause
+  size: 80638
+  timestamp: 1773688455567
 - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-action-msgs-1.2.2-np2py312h2ed9cc7_15.conda
   sha256: 5ea550277e506fc365d5b1c7000ce8ae299a65c6b935dc369d75bcba4751f3ee
   md5: eee28a77704fbfa0b44e7ef85766507a
@@ -25613,6 +25690,83 @@ packages:
   license: Apache-2.0
   size: 31918
   timestamp: 1773560818002
+- conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-sensor-msgs-4.9.1-np2py312h2ed9cc7_15.conda
+  sha256: 7850229aec7d0a9852612e91ad09055eda96034c0eb321add99ab17b3fc53028
+  md5: 34fbbc5c77f1938e1e5755a1a246fee0
+  depends:
+  - python
+  - ros-humble-builtin-interfaces
+  - ros-humble-geometry-msgs
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - libstdcxx >=14
+  - libgcc >=14
+  - __glibc >=2.17,<3.0.a0
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  license: Apache-2.0
+  size: 451436
+  timestamp: 1773562464429
+- conda: https://conda.anaconda.org/robostack-staging/linux-aarch64/ros-humble-sensor-msgs-4.9.1-np2py312h61f2ce4_15.conda
+  sha256: 6aef925fac7f90def63af4e1562283d37da3b492a07478474ce132c5c03dc116
+  md5: 3de44c56831abddc3e92993b86386e8b
+  depends:
+  - python
+  - ros-humble-builtin-interfaces
+  - ros-humble-geometry-msgs
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - libstdcxx >=14
+  - libgcc >=14
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+  license: Apache-2.0
+  size: 458625
+  timestamp: 1773556619304
+- conda: https://conda.anaconda.org/robostack-staging/osx-64/ros-humble-sensor-msgs-4.9.1-np2py312h03c2032_15.conda
+  sha256: 85135cfb17a48448ca73e926e0dabf4e0e0b4f3bcbd5d22bc0561804741f9f49
+  md5: b2758034d3815d17e9def0c74c8a0a82
+  depends:
+  - python
+  - ros-humble-builtin-interfaces
+  - ros-humble-geometry-msgs
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - libcxx >=18
+  - __osx >=10.13
+  - numpy >=1.23,<3
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  - python_abi 3.12.* *_cp312
+  license: Apache-2.0
+  size: 404687
+  timestamp: 1773693970952
+- conda: https://conda.anaconda.org/robostack-staging/osx-arm64/ros-humble-sensor-msgs-4.9.1-np2py312h50b1e4c_15.conda
+  sha256: 39ddff41e2eac3e3c619f7798fa40d66f3138fcce3cfb9c3b40b2cb874e023f7
+  md5: 01512cf4fb79f4777b4c04ab09e05b11
+  depends:
+  - python
+  - ros-humble-builtin-interfaces
+  - ros-humble-geometry-msgs
+  - ros-humble-ros-workspace
+  - ros-humble-rosidl-default-runtime
+  - ros-humble-std-msgs
+  - ros2-distro-mutex 0.8.* humble_*
+  - __osx >=11.0
+  - libcxx >=18
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.23,<3
+  - ros2-distro-mutex >=0.8.0,<0.9.0a0
+  license: Apache-2.0
+  size: 397888
+  timestamp: 1773688710516
 - conda: https://conda.anaconda.org/robostack-staging/linux-64/ros-humble-spdlog-vendor-1.3.1-np2py312h918b84f_15.conda
   sha256: 2e2d9c917c7f5b6cfb9e8beac1d05b52462fe31863aac6dfe68148cc194b00c1
   md5: 643d3909bbe7a0d968c0df7daa1898b9

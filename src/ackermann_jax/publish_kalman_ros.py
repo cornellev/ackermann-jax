@@ -22,14 +22,16 @@ class KalmanRosPublisher:
     ):
         self._node = node
         self._pub_odom = node.create_publisher(Odometry, topic_odom, 10)
-        self._pub_wheels = node.create_publisher(Float32MultiArray, topic_wheel_speeds, 10)
+        self._pub_wheels = node.create_publisher(
+            Float32MultiArray, topic_wheel_speeds, 10
+        )
 
-    def publish_state(self, ekf: EKFState, timestamp: int) -> None:
+    def publish_state(self, ekf: EKFState, timestamp_us: int) -> None:
         """Publish EKF state to ROS topics.
 
         Args:
             ekf: current EKF state
-            timestamp: nanosecond timestamp (same convention as write_kalman_shm)
+            timestamp_us: microsecond timestamp from sensor_shm / kalman_shm.
         """
         x = ekf.x_nom
         p = x.p_W
@@ -39,17 +41,16 @@ class KalmanRosPublisher:
         om = x.omega_W
 
         stamp = Time()
-        stamp.sec = int(timestamp) // 1_000_000_000
-        stamp.nanosec = int(timestamp) % 1_000_000_000
+        timestamp_ns = int(timestamp_us) * 1_000
+        stamp.sec = timestamp_ns // 1_000_000_000
+        stamp.nanosec = timestamp_ns % 1_000_000_000
 
         odom = Odometry()
         odom.header.stamp = stamp
         odom.header.frame_id = FRAME_ID
         odom.child_frame_id = CHILD_FRAME_ID
 
-        odom.pose.pose.position = Point(
-            x=float(p[0]), y=float(p[1]), z=float(p[2])
-        )
+        odom.pose.pose.position = Point(x=float(p[0]), y=float(p[1]), z=float(p[2]))
         # ROS quaternion convention: (x, y, z, w)
         odom.pose.pose.orientation = Quaternion(
             x=float(wxyz[1]),
@@ -58,12 +59,8 @@ class KalmanRosPublisher:
             w=float(wxyz[0]),
         )
 
-        odom.twist.twist.linear = Vector3(
-            x=float(v[0]), y=float(v[1]), z=float(v[2])
-        )
-        odom.twist.twist.angular = Vector3(
-            x=float(w[0]), y=float(w[1]), z=float(w[2])
-        )
+        odom.twist.twist.linear = Vector3(x=float(v[0]), y=float(v[1]), z=float(v[2]))
+        odom.twist.twist.angular = Vector3(x=float(w[0]), y=float(w[1]), z=float(w[2]))
 
         self._pub_odom.publish(odom)
 

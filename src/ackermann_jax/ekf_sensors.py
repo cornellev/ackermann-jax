@@ -38,7 +38,7 @@ def h_gps_2d(x):
 
 
 def h_wheels(x):
-    return x.omega_W
+    return x.omega_W[2:]
 
 
 def _latlon_to_local_xy(lat, lon, lat0, lon0):
@@ -59,7 +59,7 @@ def main() -> None:
     Q = _Q_SCALE * jnp.eye(ERROR_DIM)
     P0 = _P0_SCALE * jnp.eye(ERROR_DIM)
     R_gps_mat = _R_GPS_VAL * jnp.eye(2)
-    R_wheels_mat = _R_WHEELS_VAL * jnp.eye(4)
+    R_wheels_mat = _R_WHEELS_VAL * jnp.eye(2)
 
     _motor_mask = jnp.array([0.0, 0.0, 1.0, 1.0], dtype=jnp.float32)
 
@@ -134,7 +134,7 @@ def main() -> None:
                 z_gps = jnp.array([gx, gy], dtype=jnp.float32)
                 ekf = ekf_update(ekf, z_gps, h_gps_2d, R_gps_mat)
 
-            ekf = ekf_update(ekf, omega_meas, h_wheels, R_wheels_mat)
+            ekf = ekf_update(ekf, omega_meas[2:4], h_wheels, R_wheels_mat)
 
             writer.write_state(ekf, ts_us)
 

@@ -26,7 +26,8 @@ class KalmanShmWriter:
         self._seq: int = 0
         self.buf[:BLOCK_SIZE] = bytes(BLOCK_SIZE)
 
-    def write_state(self, ekf: EKFState, timestamp: int) -> None:
+    def write_state(self, ekf: EKFState, timestamp_us: int) -> None:
+        """Write EKF state with the same microsecond timestamp as sensor_shm."""
         x = ekf.x_nom
         p = x.p_W
         wxyz = x.R_WB.wxyz
@@ -39,7 +40,7 @@ class KalmanShmWriter:
 
         payload = struct.pack(
             KALMAN_FMT,
-            int(timestamp),
+            int(timestamp_us),
             float(p[0]),
             float(p[1]),
             float(p[2]),

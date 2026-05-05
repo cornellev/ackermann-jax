@@ -30,8 +30,8 @@ from ackermann_jax.ekf import EKFState, ekf_step, ERROR_DIM
 # ── Config ────────────────────────────────────────────────────────────
 
 TRACE_DIR = "/Users/lucaslibshutz/Documents/Repos/autonomy/ackermann-jax/ekf_step_trace"
-N_WARMUP = 5    # JIT warm-up calls (not traced)
-N_TRACE = 20    # calls captured in the trace
+N_WARMUP = 5  # JIT warm-up calls (not traced)
+N_TRACE = 20  # calls captured in the trace
 
 DT = 0.01
 Q_SCALE = 1e-6
@@ -42,22 +42,30 @@ R_WHEELS_SCALE = 1e-4
 
 # ── Measurement functions (same as test_ekf.py) ───────────────────────
 
+
 def h_gps(x: AckermannCarState):
     return x.p_W
+
 
 def h_gyro(x: AckermannCarState):
     return x.w_B
 
+
 def h_wheels(x: AckermannCarState):
-    return x.omega_W
+    return x.omega_W[2:4]
+
 
 def make_h_gravity(g: float):
     g_up_W = jnp.array([0.0, 0.0, g], dtype=jnp.float32)
+
     def h_gravity(x: AckermannCarState):
         return x.R_WB.as_matrix().T @ g_up_W
+
     return h_gravity
 
+
 # ── Build a realistic initial EKF state ──────────────────────────────
+
 
 def build_ekf_state(model: AckermannCarModel) -> tuple:
     """
@@ -75,11 +83,19 @@ def build_ekf_state(model: AckermannCarModel) -> tuple:
     N_settle = 50
     for _ in range(N_settle):
         tau_w, integ_v = model.map_velocity_to_wheel_torques(
-            x=x, v_cmd=1.0, integral_state=integ_v,
-            dt=dt, Kp=40.0, Ki=2.0, tau_max=0.35,
+            x=x,
+            v_cmd=1.0,
+            integral_state=integ_v,
+            dt=dt,
+            Kp=40.0,
+            Ki=2.0,
+            tau_max=0.35,
         )
         delta, integ_s = model.map_heading_to_steering(
-            x=x, psi_cmd=0.0, integral_state=integ_s, dt=dt,
+            x=x,
+            psi_cmd=0.0,
+            integral_state=integ_s,
+            dt=dt,
         )
         u = AckermannCarInput(delta=delta, tau_w=tau_w)
         x = model.step(x=x, u=u, dt=dt)
@@ -88,11 +104,19 @@ def build_ekf_state(model: AckermannCarModel) -> tuple:
 
     # Build one step's worth of inputs / measurements
     tau_w, _ = model.map_velocity_to_wheel_torques(
-        x=x, v_cmd=1.0, integral_state=integ_v,
-        dt=dt, Kp=40.0, Ki=2.0, tau_max=0.35,
+        x=x,
+        v_cmd=1.0,
+        integral_state=integ_v,
+        dt=dt,
+        Kp=40.0,
+        Ki=2.0,
+        tau_max=0.35,
     )
     delta, _ = model.map_heading_to_steering(
-        x=x, psi_cmd=0.0, integral_state=integ_s, dt=dt,
+        x=x,
+        psi_cmd=0.0,
+        integral_state=integ_s,
+        dt=dt,
     )
     u = AckermannCarInput(delta=delta, tau_w=tau_w)
 
@@ -101,18 +125,23 @@ def build_ekf_state(model: AckermannCarModel) -> tuple:
     g = model.params.chassis.g
 
     meas = {
-        "gps":     x.p_W    + jnp.sqrt(R_GPS_SCALE)     * jax.random.normal(k1, x.p_W.shape),
-        "gyro":    x.w_B    + jnp.sqrt(R_GYRO_SCALE)    * jax.random.normal(k2, x.w_B.shape),
-        "gravity": x.R_WB.as_matrix().T @ jnp.array([0., 0., g], dtype=jnp.float32)
-                            + jnp.sqrt(R_GRAVITY_SCALE)  * jax.random.normal(k3, (3,)),
-        "wheels":  x.omega_W + jnp.sqrt(R_WHEELS_SCALE) * jax.random.normal(k4, x.omega_W.shape),
+        "gps": x.p_W + jnp.sqrt(R_GPS_SCALE) * jax.random.normal(k1, x.p_W.shape),
+        "gyro": x.w_B + jnp.sqrt(R_GYRO_SCALE) * jax.random.normal(k2, x.w_B.shape),
+        "gravity": x.R_WB.as_matrix().T @ jnp.array([0.0, 0.0, g], dtype=jnp.float32)
+        + jnp.sqrt(R_GRAVITY_SCALE) * jax.random.normal(k3, (3,)),
+        "wheels": x.omega_W[2:4]
+        + jnp.sqrt(R_WHEELS_SCALE) * jax.random.normal(k4, (2,)),
     }
 
     return ekf, u, meas
 
+
 # ── Traced function ───────────────────────────────────────────────────
 
-def run_ekf_step_sequence(ekf, model, u, meas, Q, R_gps, R_gyro, R_gravity, R_wheels, dt):
+
+def run_ekf_step_sequence(
+    ekf, model, u, meas, Q, R_gps, R_gyro, R_gravity, R_wheels, dt
+):
     """One full predict + 4 sequential updates (matches test_ekf.py pattern)."""
     h_gravity = make_h_gravity(model.params.chassis.g)
     ekf = ekf_step(model, ekf, u, meas["gps"], h_gps, Q, R_gps, dt)
@@ -121,7 +150,9 @@ def run_ekf_step_sequence(ekf, model, u, meas, Q, R_gps, R_gyro, R_gravity, R_wh
     ekf = ekf_step(model, ekf, u, meas["wheels"], h_wheels, Q, R_wheels, dt)
     return ekf
 
+
 # ── Main ──────────────────────────────────────────────────────────────
+
 
 def main():
     import time
@@ -129,11 +160,11 @@ def main():
     params = default_params()
     model = AckermannCarModel(params)
 
-    Q        = Q_SCALE        * jnp.eye(ERROR_DIM)
-    R_gps    = R_GPS_SCALE    * jnp.eye(3)
-    R_gyro   = R_GYRO_SCALE   * jnp.eye(3)
-    R_grav   = R_GRAVITY_SCALE * jnp.eye(3)
-    R_wheels = R_WHEELS_SCALE  * jnp.eye(4)
+    Q = Q_SCALE * jnp.eye(ERROR_DIM)
+    R_gps = R_GPS_SCALE * jnp.eye(3)
+    R_gyro = R_GYRO_SCALE * jnp.eye(3)
+    R_grav = R_GRAVITY_SCALE * jnp.eye(3)
+    R_wheels = R_WHEELS_SCALE * jnp.eye(2)
 
     # ── Step 1: compile with x0/u0 ────────────────────────────────────
     x0 = default_state(z0=0.10)
@@ -144,14 +175,20 @@ def main():
     ekf0 = EKFState(x_nom=x0, P=1e-4 * jnp.eye(ERROR_DIM))
     g = params.chassis.g
     meas0 = {
-        "gps":     x0.p_W,
-        "gyro":    x0.w_B,
-        "gravity": x0.R_WB.as_matrix().T @ jnp.array([0., 0., g], dtype=jnp.float32),
-        "wheels":  x0.omega_W,
+        "gps": x0.p_W,
+        "gyro": x0.w_B,
+        "gravity": x0.R_WB.as_matrix().T @ jnp.array([0.0, 0.0, g], dtype=jnp.float32),
+        "wheels": x0.omega_W[2:4],
     }
     kwargs0 = dict(
-        model=model, u=u0, meas=meas0,
-        Q=Q, R_gps=R_gps, R_gyro=R_gyro, R_gravity=R_grav, R_wheels=R_wheels,
+        model=model,
+        u=u0,
+        meas=meas0,
+        Q=Q,
+        R_gps=R_gps,
+        R_gyro=R_gyro,
+        R_gravity=R_grav,
+        R_wheels=R_wheels,
         dt=DT,
     )
 
@@ -172,8 +209,14 @@ def main():
     # ── Step 2: build settled EKF state ──────────────────────────────
     ekf, u, meas = build_ekf_state(model)
     step_kwargs = dict(
-        model=model, u=u, meas=meas,
-        Q=Q, R_gps=R_gps, R_gyro=R_gyro, R_gravity=R_grav, R_wheels=R_wheels,
+        model=model,
+        u=u,
+        meas=meas,
+        Q=Q,
+        R_gps=R_gps,
+        R_gyro=R_gyro,
+        R_gravity=R_grav,
+        R_wheels=R_wheels,
         dt=DT,
     )
 
@@ -193,7 +236,9 @@ def main():
                 ekf_cur = run_ekf_step_sequence(ekf=ekf_cur, **step_kwargs)
             jax.block_until_ready(ekf_cur)
 
-    print(f"\nDone.  Open https://ui.perfetto.dev and load the trace from:\n  {TRACE_DIR}")
+    print(
+        f"\nDone.  Open https://ui.perfetto.dev and load the trace from:\n  {TRACE_DIR}"
+    )
 
 
 if __name__ == "__main__":

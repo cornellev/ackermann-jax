@@ -62,7 +62,7 @@ _R_WHEELS_VAL = 1e-4
 _Q_SCALE = 1e-6
 _P0_SCALE = 1e-4
 _TAU_MAX = 0.35
-_DT_DEFAULT = 0.05   # 20 Hz timer period [s]
+_DT_DEFAULT = 0.05  # 20 Hz timer period [s]
 _DT_MAX = 1.0
 
 TOPIC_MPC_CONTROL = "mpc/control"
@@ -73,7 +73,7 @@ def _h_gps_2d(x: AckermannCarState):
 
 
 def _h_wheels(x: AckermannCarState):
-    return x.omega_W
+    return x.omega_W[2:]  # rear wheels only
 
 
 def _latlon_to_local_xy(lat, lon, lat0, lon0):
@@ -110,7 +110,7 @@ class MpcEkfNode(Node):
         self._Q = _Q_SCALE * jnp.eye(ERROR_DIM)
         self._P0 = _P0_SCALE * jnp.eye(ERROR_DIM)
         self._R_gps = _R_GPS_VAL * jnp.eye(2)
-        self._R_wheels = _R_WHEELS_VAL * jnp.eye(4)
+        self._R_wheels = _R_WHEELS_VAL * jnp.eye(2)
         self._motor_mask = jnp.array([0.0, 0.0, 1.0, 1.0], dtype=jnp.float32)
 
         # Runtime state
@@ -198,7 +198,7 @@ class MpcEkfNode(Node):
             gx, gy = _latlon_to_local_xy(lat, lon, self._lat0, self._lon0)
             z_gps = jnp.array([gx, gy], dtype=jnp.float32)
             self._ekf = ekf_update(self._ekf, z_gps, _h_gps_2d, self._R_gps)
-        self._ekf = ekf_update(self._ekf, omega_meas, _h_wheels, self._R_wheels)
+        self._ekf = ekf_update(self._ekf, omega_meas[2:4], _h_wheels, self._R_wheels)
 
         # ── Publish EKF state ─────────────────────────────────────────────────
         self._writer.write_state(self._ekf, ts_us)
@@ -213,11 +213,11 @@ class MpcEkfNode(Node):
             u0 = result.u_opt[0]
             ctrl_msg = Float32MultiArray()
             ctrl_msg.data = [
-                float(u0[0]),   # steering angle [rad]
-                float(u0[1]),   # tau_FL (always 0 — front wheels undriven)
-                float(u0[2]),   # tau_FR (always 0)
-                float(u0[3]),   # tau_RL [N·m]
-                float(u0[4]),   # tau_RR [N·m]
+                float(u0[0]),  # steering angle [rad]
+                float(u0[1]),  # tau_FL (always 0 — front wheels undriven)
+                float(u0[2]),  # tau_FR (always 0)
+                float(u0[3]),  # tau_RL [N·m]
+                float(u0[4]),  # tau_RR [N·m]
                 float(result.cost),
                 float(result.solved),
             ]
