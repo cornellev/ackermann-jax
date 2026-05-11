@@ -1,5 +1,5 @@
 :code-link:`ackermann-jax <https://github.com/cornellev/ackermann-jax>`
-=============
+=======================================================================
 
 3D rigid-body Ackermann car physics and state estimation in JAX.
 
