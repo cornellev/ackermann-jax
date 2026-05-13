@@ -141,9 +141,11 @@ class AckermannCarModel:
         dv_W = (F_W / p.chassis.mass) + g_W
 
 
+        H_wheels_B = jnp.sum(p.wheels.I_w * omega_w[:, None] * n_B, axis=0)
+
         I_b = p.chassis.I_body
         Iw = I_b @ w_B
-        dW_B = jnp.linalg.solve(I_b,(tau_B-jnp.cross(w_B,Iw)))
+        dW_B = jnp.linalg.solve(I_b,(tau_B-jnp.cross(w_B,Iw + H_wheels_B)))
 
         dp_W = v_W
 

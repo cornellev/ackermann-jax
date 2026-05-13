@@ -3,7 +3,25 @@ import time
 import jax
 import jax.numpy as jnp
 from jax import Array
-from matplotlib import pyplot as plt
+import matplotlib
+import re
+import pathlib
+matplotlib.use("pgf")
+matplotlib.rcParams.update({
+    "pgf.texsystem": "pdflatex",
+    "text.usetex": True,         # render text through LaTeX
+    "font.family": "serif",
+    "pgf.rcfonts": False,
+    "pgf.preamble": (
+        r"\usepackage[T1]{fontenc}"
+        + r"\usepackage[utf8]{inputenc}"
+        + r"\def\mathdefault#1{#1}"
+    )
+})
+print(matplotlib.rcParams['text.usetex'])
+print(matplotlib.get_backend())
+from matplotlib import pyplot as plt #noqa
+
 import jaxlie
 import addcopyfighandler
 
@@ -19,7 +37,6 @@ from ackermann_jax.ekf import EKFState, ekf_predict, ekf_update, ERROR_DIM
 
 jax.config.update("jax_enable_x64", False)
 # jax.config.update("jax_log_compiles", True)  # Print out compiled HLO for debugging
-
 
 # Error-state index slices (must match pack/unpack_error_state ordering)
 _P_IDX = {
@@ -363,27 +380,28 @@ def plot_ekf_vs_truth(
 
     # ── Position: overlay + error with ±2σ ──
     sigma_p = _sigma_band(ekf_hist.P, _P_IDX["p_W"])
-    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(7, 5))
     for i, lbl in enumerate(["x", "y", "z"]):
         axes[i, 0].plot(t, truth_p[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_p[:, i], "r--", label="EKF")
         if m_gps is not None:
             axes[i, 0].scatter(t_s, m_gps[:, i], **meas_kw)
-        axes[i, 0].set_ylabel(f"p_{lbl} [m]")
+        axes[i, 0].set_ylabel(r"$p_" + lbl + "$ [m]")
         axes[i, 0].legend(fontsize=8)
         err = ekf_p[:, i] - truth_p[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(
             t, -sigma_p[:, i], sigma_p[:, i], alpha=0.25, color="r"
         )
-        axes[i, 1].set_ylabel(f"Δp_{lbl} [m]")
+        axes[i, 1].set_ylabel(r"$\Delta p_" + lbl + r"$ [m]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
-    fig.suptitle(f"{title_prefix} — Position")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
+    # fig.suptitle(f"{title_prefix} — Position")
     fig.tight_layout()
+    fig.savefig('figures/straight/position.pgf',bbox_inches='tight')
 
     # ── Velocity: overlay + error with ±2σ  (no direct measurement) ──
     sigma_v = _sigma_band(ekf_hist.P, _P_IDX["v_W"])
@@ -398,12 +416,12 @@ def plot_ekf_vs_truth(
         axes[i, 1].fill_between(
             t, -sigma_v[:, i], sigma_v[:, i], alpha=0.25, color="r"
         )
-        axes[i, 1].set_ylabel(f"Δ{lbl} [m/s]")
+        axes[i, 1].set_ylabel(r"$\Delta \ " + lbl + r"$ [m/s]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     fig.suptitle(f"{title_prefix} — Velocity (world)")
     fig.tight_layout()
 
@@ -422,14 +440,15 @@ def plot_ekf_vs_truth(
         axes[i, 1].fill_between(
             t, -sigma_w[:, i], sigma_w[:, i], alpha=0.25, color="r"
         )
-        axes[i, 1].set_ylabel(f"Δ{lbl} [rad/s]")
+        axes[i, 1].set_ylabel(r"$\Delta\ " + lbl +  "$ [rad/s]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     fig.suptitle(f"{title_prefix} — Angular velocity (body)")
     fig.tight_layout()
+    fig.savefig('figures/straight/angular_vel.pgf',bbox_inches='tight')
 
     # ── Wheel speeds: overlay + error with ±2σ ──
     sigma_om = _sigma_band(ekf_hist.P, _P_IDX["omega_W"])
@@ -440,21 +459,22 @@ def plot_ekf_vs_truth(
         axes[i, 0].plot(t, ekf_omega[:, i], "r--", label="EKF")
         if m_wheels is not None and i >= 2:
             axes[i, 0].scatter(t_s, m_wheels[:, i], **meas_kw)
-        axes[i, 0].set_ylabel(f"ω_{name} [rad/s]")
+        axes[i, 0].set_ylabel(r"$\omega_" + name +"$ [rad/s]")
         axes[i, 0].legend(fontsize=8)
         err = ekf_omega[:, i] - truth_omega[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(
             t, -sigma_om[:, i], sigma_om[:, i], alpha=0.25, color="r"
         )
-        axes[i, 1].set_ylabel(f"Δω_{name} [rad/s]")
+        axes[i, 1].set_ylabel(r"$\Delta \omega \ " + name + "$ [rad/s]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     fig.suptitle(f"{title_prefix} — Wheel speeds")
     fig.tight_layout()
+    fig.savefig('figures/straight/wheel_speeds.pgf',bbox_inches='tight')
 
     # ── Roll, Pitch, Yaw: overlay + error with ±2σ ──
     def _roll_pitch(wxyz):
@@ -473,7 +493,7 @@ def plot_ekf_vs_truth(
     )
     sigma_theta = _sigma_band(ekf_hist.P, _P_IDX["theta"])  # (N, 3): roll=0, pitch=1, yaw=2
 
-    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(7, 5))
     for i, (name, true_ang, ekf_ang, sigma_col) in enumerate([
         ("roll",  roll_true,  roll_ekf,  0),
         ("pitch", pitch_true, pitch_ekf, 1),
@@ -487,17 +507,31 @@ def plot_ekf_vs_truth(
         sigma_deg = jnp.rad2deg(sigma_theta[:, sigma_col])
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(t, -sigma_deg, sigma_deg, alpha=0.25, color="r")
-        axes[i, 1].set_ylabel(f"Δ{name} [deg]")
+        axes[i, 1].set_ylabel(r"$\Delta$ " + name + " [deg]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
-    fig.suptitle(f"{title_prefix} — Roll, Pitch & Yaw")
+    fig.suptitle(rf"{title_prefix} — Roll, Pitch \& Yaw")
     fig.tight_layout()
+    fig.savefig('figures/straight/rpy.pgf',bbox_inches='tight')
 
-    plt.show()
+    # plt.show()
 
+def patch_pgf(path):
+    text = pathlib.Path(path).read_text()
+    # patched = text.replace(
+    #     r"\begin{pgfpicture}",
+    #     r"\def\mathdefault#1{#1}" + '\n' + r"\begin{pgfpicture",
+    #     1
+    # )
+    patched = text.replace(
+        r'\begin{pgfpicture}',
+        r'\def\mathdefault#1{#1}' + '\n' + r'\begin{pgfpicture}',
+        1  # only first occurrence
+    )
+    pathlib.Path(path).write_text(patched)
 
 # ── Main ─────────────────────────────────────────────────────────────
 
@@ -602,6 +636,16 @@ def main():
         out_L, states_out, ekf_hist,
         start_idx=N_settle, measurements=meas,
     )
+
+    pgf_files = [
+        'figures/straight/position.pgf',
+        'figures/straight/rpy.pgf',
+        'figures/straight/wheel_speeds.pgf',
+        'figures/straight/angular_vel.pgf'
+    ]
+
+    for f in pgf_files:
+        patch_pgf(f)
 
 
 if __name__ == "__main__":
