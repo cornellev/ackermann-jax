@@ -4,19 +4,13 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 import matplotlib
-import re
 import pathlib
-matplotlib.use("pgf")
+matplotlib.use("pdf")
 matplotlib.rcParams.update({
-    "pgf.texsystem": "pdflatex",
+    # "pgf.texsystem": "pdflatex",
     "text.usetex": True,         # render text through LaTeX
     "font.family": "serif",
-    "pgf.rcfonts": False,
-    "pgf.preamble": (
-        r"\usepackage[T1]{fontenc}"
-        + r"\usepackage[utf8]{inputenc}"
-        + r"\def\mathdefault#1{#1}"
-    )
+    # "pgf.rcfonts": False,
 })
 print(matplotlib.rcParams['text.usetex'])
 print(matplotlib.get_backend())
@@ -400,8 +394,8 @@ def plot_ekf_vs_truth(
     axes[0, 0].set_title("Overlay")
     axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     # fig.suptitle(f"{title_prefix} — Position")
-    fig.tight_layout()
-    fig.savefig('figures/straight/position.pgf',bbox_inches='tight')
+    fig.tight_layout(pad=0.5)
+    fig.savefig('figures/straight/position.pdf',bbox_inches='tight')
 
     # ── Velocity: overlay + error with ±2σ  (no direct measurement) ──
     sigma_v = _sigma_band(ekf_hist.P, _P_IDX["v_W"])
@@ -423,7 +417,7 @@ def plot_ekf_vs_truth(
     axes[0, 0].set_title("Overlay")
     axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     fig.suptitle(f"{title_prefix} — Velocity (world)")
-    fig.tight_layout()
+    fig.tight_layout(pad=0.5)
 
     # ── Angular velocity: overlay + error with ±2σ ──
     sigma_w = _sigma_band(ekf_hist.P, _P_IDX["w_B"])
@@ -446,9 +440,9 @@ def plot_ekf_vs_truth(
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
     axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
-    fig.suptitle(f"{title_prefix} — Angular velocity (body)")
-    fig.tight_layout()
-    fig.savefig('figures/straight/angular_vel.pgf',bbox_inches='tight')
+    # fig.suptitle(f"{title_prefix} — Angular velocity (body)")
+    fig.tight_layout(pad=0.5)
+    fig.savefig('figures/straight/angular_vel.pdf',bbox_inches='tight')
 
     # ── Wheel speeds: overlay + error with ±2σ ──
     sigma_om = _sigma_band(ekf_hist.P, _P_IDX["omega_W"])
@@ -472,9 +466,9 @@ def plot_ekf_vs_truth(
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
     axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
-    fig.suptitle(f"{title_prefix} — Wheel speeds")
-    fig.tight_layout()
-    fig.savefig('figures/straight/wheel_speeds.pgf',bbox_inches='tight')
+    # fig.suptitle(f"{title_prefix} — Wheel speeds")
+    fig.tight_layout(pad=0.5)
+    fig.savefig('figures/straight/wheel_speeds.pdf',bbox_inches='tight')
 
     # ── Roll, Pitch, Yaw: overlay + error with ±2σ ──
     def _roll_pitch(wxyz):
@@ -513,19 +507,14 @@ def plot_ekf_vs_truth(
     axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
-    fig.suptitle(rf"{title_prefix} — Roll, Pitch \& Yaw")
-    fig.tight_layout()
-    fig.savefig('figures/straight/rpy.pgf',bbox_inches='tight')
+    # fig.suptitle(rf"{title_prefix} — Roll, Pitch \& Yaw")
+    fig.tight_layout(pad=0.5)
+    fig.savefig('figures/straight/rpy.pdf',bbox_inches='tight')
 
     # plt.show()
 
 def patch_pgf(path):
     text = pathlib.Path(path).read_text()
-    # patched = text.replace(
-    #     r"\begin{pgfpicture}",
-    #     r"\def\mathdefault#1{#1}" + '\n' + r"\begin{pgfpicture",
-    #     1
-    # )
     patched = text.replace(
         r'\begin{pgfpicture}',
         r'\def\mathdefault#1{#1}' + '\n' + r'\begin{pgfpicture}',
@@ -619,11 +608,20 @@ def main():
     # ── Metrics (post-settle only) ──
     truth_p = states_out.p_W[N_settle:]
     truth_v = states_out.v_W[N_settle:]
+    truth_yaw = states_out.R_WB.compute_yaw_radians()[N_settle:]
     pos_err = jnp.linalg.norm(ekf_hist.x_nom.p_W - truth_p, axis=-1)
     vel_err = jnp.linalg.norm(ekf_hist.x_nom.v_W - truth_v, axis=-1)
+    yaw_err = jnp.linalg.norm(ekf_hist.x_nom.R_WB.compute_yaw_radians() - truth_yaw)
     print(f"\nEKF position RMSE:  {jnp.sqrt(jnp.mean(pos_err**2)):.6f} m")
-    print(f"EKF position max:   {jnp.max(pos_err):.6f} m")
+    print(f"EKF position max error:   {jnp.max(pos_err):.6f} m")
+    print(f"EKF position min error:   {jnp.min(pos_err):.6f} m")
     print(f"EKF velocity RMSE:  {jnp.sqrt(jnp.mean(vel_err**2)):.6f} m/s")
+    print(f"EKF velocity max error:   {jnp.max(vel_err):.6f} m/s")
+    print(f"EKF velocity min error:   {jnp.min(vel_err):.6f} m/s")
+    print(f"EKF yaw RMSE: {jnp.sqrt(jnp.mean(jnp.square(yaw_err))):.6f} rad")
+    print(f"EKF yaw max error:   {jnp.max(yaw_err):.6f} rad")
+    print(f"EKF yaw min error:   {jnp.min(yaw_err):.6f} rad")
+
 
     # ── Plot ──
     meas = {
@@ -637,15 +635,15 @@ def main():
         start_idx=N_settle, measurements=meas,
     )
 
-    pgf_files = [
-        'figures/straight/position.pgf',
-        'figures/straight/rpy.pgf',
-        'figures/straight/wheel_speeds.pgf',
-        'figures/straight/angular_vel.pgf'
-    ]
-
-    for f in pgf_files:
-        patch_pgf(f)
+    # pgf_files = [
+    #     'figures/straight/position.pgf',
+    #     'figures/straight/rpy.pgf',
+    #     'figures/straight/wheel_speeds.pgf',
+    #     'figures/straight/angular_vel.pgf'
+    # ]
+    #
+    # for f in pgf_files:
+    #     patch_pgf(f)
 
 
 if __name__ == "__main__":

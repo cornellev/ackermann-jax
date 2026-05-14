@@ -12,6 +12,17 @@ import time
 import jax
 import jax.numpy as jnp
 from jax import Array
+
+import matplotlib
+import pathlib
+matplotlib.use("pdf")
+matplotlib.rcParams.update({
+    # "pgf.texsystem": "pdflatex",
+    "text.usetex": True,         # render text through LaTeX
+    "font.family": "serif",
+    # "pgf.rcfonts": False,
+})
+
 from matplotlib import pyplot as plt
 import jaxlie
 import addcopyfighandler
@@ -284,29 +295,30 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
 
     # ── Position ───────────────────────────────────────────────────────
     sigma_p = _sigma_band(ekf_hist.P, _P_IDX["p_W"])
-    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(7, 5))
     for i, lbl in enumerate(["x", "y", "z"]):
         axes[i, 0].plot(t, truth_p[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_p[:, i],   "r--", label="EKF")
         if m_gps is not None:
             axes[i, 0].scatter(t_s, m_gps[:, i], **meas_kw)
-        axes[i, 0].set_ylabel(f"p_{lbl} [m]")
+        axes[i, 0].set_ylabel(r"$p_" + lbl + "$ [m]")
         axes[i, 0].legend(fontsize=8)
         err = ekf_p[:, i] - truth_p[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(t, -sigma_p[:, i], sigma_p[:, i], alpha=0.25, color="r")
-        axes[i, 1].set_ylabel(f"Δp_{lbl} [m]")
+        axes[i, 1].set_ylabel(r"$\Delta p_" + lbl + "$ [m]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
-    fig.suptitle(f"{title_prefix} — Position")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
+    # fig.suptitle(f"{title_prefix} — Position")
     fig.tight_layout()
+    fig.savefig('figures/sinusoidal/position.pdf',bbox_inches='tight')
 
     # ── Velocity ───────────────────────────────────────────────────────
     sigma_v = _sigma_band(ekf_hist.P, _P_IDX["v_W"])
-    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(7, 5))
     for i, lbl in enumerate(["vx", "vy", "vz"]):
         axes[i, 0].plot(t, truth_v[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_v[:, i],   "r--", label="EKF")
@@ -315,18 +327,18 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
         err = ekf_v[:, i] - truth_v[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(t, -sigma_v[:, i], sigma_v[:, i], alpha=0.25, color="r")
-        axes[i, 1].set_ylabel(f"Δ{lbl} [m/s]")
+        axes[i, 1].set_ylabel(r"$\Delta " + lbl + "$ [m/s]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
-    fig.suptitle(f"{title_prefix} — Velocity (world)")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
+    # fig.suptitle(f"{title_prefix} — Velocity (world)")
     fig.tight_layout()
 
     # ── Angular velocity ───────────────────────────────────────────────
     sigma_w = _sigma_band(ekf_hist.P, _P_IDX["w_B"])
-    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(7, 5))
     for i, lbl in enumerate(["wx", "wy", "wz"]):
         axes[i, 0].plot(t, truth_w[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_w[:, i],   "r--", label="EKF")
@@ -337,36 +349,38 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
         err = ekf_w[:, i] - truth_w[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(t, -sigma_w[:, i], sigma_w[:, i], alpha=0.25, color="r")
-        axes[i, 1].set_ylabel(f"Δ{lbl} [rad/s]")
+        axes[i, 1].set_ylabel(r"$\Delta " + lbl + "$ [rad/s]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
-    fig.suptitle(f"{title_prefix} — Angular velocity (body)")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
+    # fig.suptitle(f"{title_prefix} — Angular velocity (body)")
     fig.tight_layout()
+    fig.savefig('figures/sinusoidal/angular_vel.pdf',bbox_inches='tight')
 
     # ── Wheel speeds ───────────────────────────────────────────────────
     sigma_om = _sigma_band(ekf_hist.P, _P_IDX["omega_W"])
-    fig, axes = plt.subplots(4, 2, sharex="col", figsize=(14, 10))
+    fig, axes = plt.subplots(4, 2, sharex="col", figsize=(7, 5))
     for i, name in enumerate(["FL", "FR", "RL", "RR"]):
         axes[i, 0].plot(t, truth_om[:, i], "k-", label="truth")
         axes[i, 0].plot(t, ekf_om[:, i],   "r--", label="EKF")
         if m_wheels is not None and i >= 2:
             axes[i, 0].scatter(t_s, m_wheels[:, i], **meas_kw)
-        axes[i, 0].set_ylabel(f"ω_{name} [rad/s]")
+        axes[i, 0].set_ylabel(r"$\omega_" + name + "$ [rad/s]")
         axes[i, 0].legend(fontsize=8)
         err = ekf_om[:, i] - truth_om[:, i]
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(t, -sigma_om[:, i], sigma_om[:, i], alpha=0.25, color="r")
-        axes[i, 1].set_ylabel(f"Δω_{name} [rad/s]")
+        axes[i, 1].set_ylabel(r"$\Delta \omega_" + name + "$ [rad/s]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
-    fig.suptitle(f"{title_prefix} — Wheel speeds")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
+    # fig.suptitle(f"{title_prefix} — Wheel speeds")
     fig.tight_layout()
+    fig.savefig('figures/sinusoidal/wheel_speeds.pdf',bbox_inches='tight')
 
     # ── Roll, Pitch, Yaw ──────────────────────────────────────────────
     def _roll_pitch(wxyz):
@@ -381,7 +395,7 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
     yaw_ekf  = jax.vmap(lambda q: jaxlie.SO3(q).compute_yaw_radians())(ekf_hist.x_nom.R_WB.wxyz)
     sigma_theta = _sigma_band(ekf_hist.P, _P_IDX["theta"])
 
-    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(14, 8))
+    fig, axes = plt.subplots(3, 2, sharex="col", figsize=(7, 5))
     for i, (name, true_ang, ekf_ang, sigma_col) in enumerate([
         ("roll",  roll_true,  roll_ekf,  0),
         ("pitch", pitch_true, pitch_ekf, 1),
@@ -395,14 +409,15 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
         sigma_deg = jnp.rad2deg(sigma_theta[:, sigma_col])
         axes[i, 1].plot(t, err, "b-", linewidth=0.8)
         axes[i, 1].fill_between(t, -sigma_deg, sigma_deg, alpha=0.25, color="r")
-        axes[i, 1].set_ylabel(f"Δ{name} [deg]")
+        axes[i, 1].set_ylabel(r"$\Delta "+ name + "$ [deg]")
         axes[i, 1].axhline(0, color="k", linewidth=0.3)
     axes[0, 0].set_title("Overlay")
-    axes[0, 1].set_title("Error  ± 2σ")
+    axes[0, 1].set_title(r"Error  $\pm 2\sigma$")
     axes[-1, 0].set_xlabel("t [s]")
     axes[-1, 1].set_xlabel("t [s]")
-    fig.suptitle(f"{title_prefix} — Roll, Pitch & Yaw")
+    # fig.suptitle(rf"{title_prefix} — Roll, Pitch \& Yaw")
     fig.tight_layout()
+    fig.savefig('figures/sinusoidal/rpy.pdf',bbox_inches='tight')
 
     # ── Heading command vs actual yaw ─────────────────────────────────
     fig, ax = plt.subplots(figsize=(12, 4))
@@ -415,8 +430,16 @@ def plot_ekf_vs_truth(logs, stateHist, ekf_hist, start_idx=0, title_prefix="EKF"
     ax.set_title(f"{title_prefix} — Heading command vs actual yaw")
     fig.tight_layout()
 
-    plt.show()
+    # plt.show()
 
+def patch_pgf(path):
+    text = pathlib.Path(path).read_text()
+    patched = text.replace(
+        r'\begin{pgfpicture}',
+        r'\def\mathdefault#1{#1}' + '\n' + r'\begin{pgfpicture}',
+        1  # only first occurrence
+    )
+    pathlib.Path(path).write_text(patched)
 
 # ── Main ─────────────────────────────────────────────────────────────
 
@@ -508,14 +531,28 @@ def main():
     print(f"  1st call (compile + run): {t_compile * 1e3:.1f} ms")
     print(f"  2nd call (run only):      {t_run * 1e3:.1f} ms  ({t_run / N_run * 1e6:.2f} µs/step)")
 
+    # truth_p = stateHist.p_W[N_settle:]
+    # truth_v = stateHist.v_W[N_settle:]
+    # pos_err = jnp.linalg.norm(ekf_hist.x_nom.p_W - truth_p, axis=-1)
+    # vel_err = jnp.linalg.norm(ekf_hist.x_nom.v_W - truth_v, axis=-1)
+    # print(f"\nEKF position RMSE:  {jnp.sqrt(jnp.mean(pos_err**2)):.6f} m")
+    # print(f"EKF position max:   {jnp.max(pos_err):.6f} m")
+    # print(f"EKF velocity RMSE:  {jnp.sqrt(jnp.mean(vel_err**2)):.6f} m/s")
     truth_p = stateHist.p_W[N_settle:]
     truth_v = stateHist.v_W[N_settle:]
+    truth_yaw = stateHist.R_WB.compute_yaw_radians()[N_settle:]
     pos_err = jnp.linalg.norm(ekf_hist.x_nom.p_W - truth_p, axis=-1)
     vel_err = jnp.linalg.norm(ekf_hist.x_nom.v_W - truth_v, axis=-1)
+    yaw_err = jnp.linalg.norm(ekf_hist.x_nom.R_WB.compute_yaw_radians() - truth_yaw)
     print(f"\nEKF position RMSE:  {jnp.sqrt(jnp.mean(pos_err**2)):.6f} m")
-    print(f"EKF position max:   {jnp.max(pos_err):.6f} m")
+    print(f"EKF position max error:   {jnp.max(pos_err):.6f} m")
+    print(f"EKF position min error:   {jnp.min(pos_err):.6f} m")
     print(f"EKF velocity RMSE:  {jnp.sqrt(jnp.mean(vel_err**2)):.6f} m/s")
-
+    print(f"EKF velocity max error:   {jnp.max(vel_err):.6f} m/s")
+    print(f"EKF velocity min error:   {jnp.min(vel_err):.6f} m/s")
+    print(f"EKF yaw RMSE: {jnp.sqrt(jnp.mean(jnp.square(yaw_err))):.6f} rad")
+    print(f"EKF yaw max error:   {jnp.max(yaw_err):.6f} rad")
+    print(f"EKF yaw min error:   {jnp.min(yaw_err):.6f} rad")
     meas = {
         "gps":     z_gps,
         "gyro":    z_gyro,
@@ -529,6 +566,16 @@ def main():
         measurements=meas,
     )
 
+
+    # pgf_files = [
+    #     'figures/sinusoidal/position.pgf',
+    #     'figures/sinusoidal/rpy.pgf',
+    #     'figures/sinusoidal/wheel_speeds.pgf',
+    #     'figures/sinusoidal/angular_vel.pgf'
+    # ]
+    #
+    # for f in pgf_files:
+    #     patch_pgf(f)
 
 if __name__ == "__main__":
     main()
